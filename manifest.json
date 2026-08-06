@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "X 回复副驾驶",
+  "name": "X 助手",
   "version": "0.2.0",
   "description": "读取当前 X 帖子，生成经过人工确认的评论草稿。不会自动发布。",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
@@ -18,7 +18,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "打开 X 回复副驾驶"
+    "default_title": "打开 X 助手"
   },
   "side_panel": {
     "default_path": "sidepanel.html"

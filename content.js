@@ -122,8 +122,8 @@ function addDraftTriggers() {
     const trigger = document.createElement('button');
     trigger.type = 'button';
     trigger.className = 'x-reply-copilot-trigger';
-    trigger.setAttribute('aria-label', '用 X 回复副驾驶生成草稿');
-    trigger.title = '用 X 回复副驾驶生成草稿';
+    trigger.setAttribute('aria-label', '用 X 助手生成草稿');
+    trigger.title = '用 X 助手生成草稿';
     trigger.textContent = 'AI';
     trigger.addEventListener('click', (event) => {
       event.preventDefault();

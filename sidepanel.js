@@ -2,11 +2,13 @@ const state = {
   post: null,
   profile: '',
   currentIdeaType: 'all',
-  ideasInitialized: false
+  ideasInitialized: false,
+  settings: null
 };
+
 const $ = (selector) => document.querySelector(selector);
 
-const { languageNames, ideaTypeNames, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, ideaTypeNames, buildReplyPrompt, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
 
 const styleNames = {
   insightful: '补充观点',
@@ -46,6 +48,107 @@ document.querySelectorAll('[data-idea-type]').forEach((button) => {
 $('#scanTrendingButton').addEventListener('click', scanTrendingPosts);
 
 $('#settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
+initializeModelControls();
+
+async function initializeModelControls() {
+  state.settings = await loadSettings();
+  $('#providerSelect').value = state.settings.provider;
+  await populateModelSelect(state.settings.model);
+  $('#providerSelect').addEventListener('change', switchProvider);
+  $('#modelSelect').addEventListener('change', saveSelectedModel);
+  $('#detectModelButton').addEventListener('click', detectModel);
+  $('#fetchModelsButton').addEventListener('click', fetchModels);
+}
+
+async function loadSettings() {
+  return chrome.storage.local.get({
+    provider: 'openai-compatible',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    model: 'gpt-4o-mini',
+    apiKey: '',
+    apiKeys: {}
+  });
+}
+
+async function populateModelSelect(selectedModel, models = []) {
+  const modelSelect = $('#modelSelect');
+  const availableModels = [...new Set([selectedModel, ...models].filter(Boolean))];
+  modelSelect.replaceChildren(...availableModels.map((model) => {
+    const option = document.createElement('option');
+    option.value = model;
+    option.textContent = model;
+    return option;
+  }));
+  if (!availableModels.length) {
+    modelSelect.add(new Option('请先配置 API Key', ''));
+    modelSelect.disabled = true;
+    return;
+  }
+  modelSelect.disabled = false;
+  modelSelect.value = selectedModel;
+}
+
+async function switchProvider() {
+  const provider = $('#providerSelect').value;
+  const defaults = provider === 'deepseek'
+    ? { endpoint: 'https://api.deepseek.com', model: 'deepseek-chat' }
+    : { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini' };
+  state.settings = {
+    ...state.settings,
+    provider,
+    endpoint: defaults.endpoint,
+    model: defaults.model,
+    apiKey: state.settings.apiKeys?.[provider] || ''
+  };
+  await chrome.storage.local.set(state.settings);
+  await populateModelSelect(state.settings.model);
+  setModelStatus('已切换，请检测', '');
+}
+
+async function saveSelectedModel() {
+  state.settings.model = $('#modelSelect').value;
+  await chrome.storage.local.set({ model: state.settings.model });
+}
+
+async function detectModel() {
+  await checkModelConnection($('#detectModelButton'), '检测中…');
+}
+
+async function fetchModels() {
+  await checkModelConnection($('#fetchModelsButton'), '获取中…', true);
+}
+
+async function checkModelConnection(button, busyLabel, shouldList = false) {
+  state.settings = await loadSettings();
+  const apiKey = state.settings.apiKeys?.[state.settings.provider] || state.settings.apiKey;
+  if (!apiKey) {
+    setModelStatus('请先在设置中配置 API Key', 'error');
+    return;
+  }
+  setLoading(button, true, busyLabel);
+  try {
+    const response = await fetch(buildModelsEndpoint(state.settings), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15000)
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || `HTTP ${response.status}`);
+    const models = Array.isArray(payload.data)
+      ? payload.data.map((item) => item.id).filter(Boolean)
+      : [];
+    if (shouldList && !models.length) throw new Error('官方没有返回可用模型。');
+    if (models.length) {
+      await populateModelSelect(state.settings.model, models);
+      state.settings.model = $('#modelSelect').value;
+      await chrome.storage.local.set({ model: state.settings.model });
+    }
+    setModelStatus(shouldList ? `已获取 ${models.length} 个模型` : '连接正常', 'success');
+  } catch (error) {
+    setModelStatus(`检测失败：${error.message}`, 'error');
+  } finally {
+    setLoading(button, false, button.id === 'fetchModelsButton' ? '获取模型列表' : '检测模型');
+  }
+}
 $('#extractButton').addEventListener('click', extractPost);
 $('#draftButton').addEventListener('click', generateDrafts);
 
@@ -152,6 +255,8 @@ async function generateDrafts() {
   if (!state.post) return;
   setError('');
   setLoading($('#draftButton'), true, '生成中…');
+  setDraftLoading(true);
+  showToast('正在生成回复草稿…', 'loading');
 
   try {
     const settings = await chrome.storage.local.get({
@@ -160,6 +265,7 @@ async function generateDrafts() {
       model: 'gpt-4o-mini',
       apiKey: ''
     });
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
     const profile = $('#profileInput').value.trim();
     const language = $('#languageSelect').value;
     const style = $('#styleSelect').value;
@@ -168,11 +274,18 @@ async function generateDrafts() {
       : demoDrafts(language, style);
 
     renderResult(result, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
+    showToast('回复草稿生成成功', 'success');
   } catch (error) {
     setError(error.message);
+    showToast('回复草稿生成失败，请查看下方错误信息', 'error');
   } finally {
+    setDraftLoading(false);
     setLoading($('#draftButton'), false, '生成评论草稿');
   }
+}
+
+function setDraftLoading(loading) {
+  $('#draftLoading').classList.toggle('hidden', !loading);
 }
 
 async function generateIdeas() {
@@ -192,6 +305,7 @@ async function generateIdeas() {
       apiKey: ''
     });
     const profile = $('#contentProfileInput').value.trim();
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
     const result = settings.apiKey
       ? await requestContentIdea(settings, type, language, profile)
       : demoIdea(type, language);
@@ -224,6 +338,7 @@ async function requestModel(settings, profile, language, style) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       model: settings.model,
       temperature: 0.7,
@@ -231,7 +346,7 @@ async function requestModel(settings, profile, language, style) {
       messages: [
         {
           role: 'system',
-          content: `你是 X 评论草稿助手，只生成草稿，绝不决定发布。\n硬性规则：不虚构事实、数据、客户或个人经历；不把无关帖子变成广告；不对医疗、法律、投资、政治事件给出确定性判断；没有足够上下文时建议不回复；默认不放链接；评论必须直接回应原帖。\n请使用${languageName}生成所有面向用户的字段和草稿。回复风格为“${styleName}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。\n请输出 JSON：{\"shouldReply\": boolean, \"reason\": string, \"risk\": string, \"angle\": string, \"drafts\": string[], \"translations\": string[]}`
+          content: buildReplyPrompt(languageName, styleName)
         },
         {
           role: 'user',
@@ -250,13 +365,31 @@ async function requestModel(settings, profile, language, style) {
     const detail = await response.text();
     throw new Error(`模型请求失败（${response.status}）：${detail.slice(0, 160)}`);
   }
-
   const payload = await response.json();
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error('模型没有返回可用内容。');
+  return normalizeResult(JSON.parse(content));
+}
 
-  const parsed = JSON.parse(content);
-  return normalizeResult(parsed);
+function requestEndpoint(settings) {
+  if (settings.provider !== 'deepseek') return settings.endpoint;
+  const endpoint = settings.endpoint.includes('api.deepseek.com')
+    ? settings.endpoint
+    : 'https://api.deepseek.com';
+  return `${endpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '')}/chat/completions`;
+}
+
+function buildModelsEndpoint(settings) {
+  const endpoint = settings.provider === 'deepseek'
+    ? settings.endpoint.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '')
+    : settings.endpoint.replace(/\/chat\/completions\/?$/, '');
+  return `${endpoint}/models`;
+}
+
+function setModelStatus(message, status) {
+  const element = $('#modelStatus');
+  element.textContent = message;
+  element.dataset.state = status;
 }
 
 async function requestContentIdea(settings, type, language, profile) {
@@ -268,6 +401,7 @@ async function requestContentIdea(settings, type, language, profile) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       model: settings.model,
       temperature: 0.8,

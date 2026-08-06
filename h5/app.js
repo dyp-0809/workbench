@@ -1,4 +1,4 @@
-const { languageNames, ideaTypeNames, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, ideaTypeNames, buildReplyPrompt, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
@@ -132,7 +132,7 @@ async function generateDrafts() {
       targetLanguage: languageNames[language],
       preferredStyle: styleNames[style],
       post
-    }, `你是 X 评论草稿助手，只生成草稿，绝不决定发布。\n硬性规则：不虚构事实、数据、客户或个人经历；不把无关帖子变成广告；不对医疗、法律、投资、政治事件给出确定性判断；没有足够上下文时建议不回复；默认不放链接；评论必须直接回应原帖。\n请使用${languageNames[language]}生成所有面向用户的字段和草稿。回复风格为“${styleNames[style]}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。\n请输出 JSON：{"shouldReply":boolean,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`);
+    }, buildReplyPrompt(languageNames[language], styleNames[style]));
     renderReply(result);
     showToast('评论生成成功', 'success');
   } catch (error) {

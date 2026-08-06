@@ -1,0 +1,20 @@
+.x-reply-copilot-trigger {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  margin: 0 2px !important;
+  padding: 0 5px !important;
+  color: rgb(83, 100, 113) !important;
+  border: 0 !important;
+  border-radius: 9999px !important;
+  background: transparent !important;
+  font: 700 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  cursor: pointer !important;
+}
+
+.x-reply-copilot-trigger:hover {
+  color: rgb(29, 155, 240) !important;
+  background: rgba(29, 155, 240, 0.1) !important;
+}

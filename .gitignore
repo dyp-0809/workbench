@@ -1,0 +1,6 @@
+.DS_Store
+
+# Local development artifacts
+*.log
+.env
+.env.*

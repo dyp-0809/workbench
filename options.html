@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>X 回复副驾驶设置</title>
+  <style>
+    body { max-width: 680px; margin: 40px auto; padding: 0 20px; color: #17202a; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    h1 { margin-bottom: 8px; }
+    p { color: #536471; }
+    label { display: grid; gap: 6px; margin-top: 18px; font-weight: 600; }
+    input { padding: 10px; border: 1px solid #cfd9de; border-radius: 8px; font: inherit; }
+    button { margin-top: 22px; padding: 10px 16px; color: #fff; border: 0; border-radius: 8px; background: #0f1419; font-weight: 700; cursor: pointer; }
+    button.secondary { margin-top: 8px; margin-right: 8px; background: #536471; }
+    button:disabled { cursor: wait; opacity: 0.65; }
+    #status { margin-left: 10px; color: #167447; }
+    #connectionStatus { display: inline-block; margin-top: 10px; font-weight: 600; }
+    #connectionStatus[data-state="success"] { color: #167447; }
+    #connectionStatus[data-state="error"] { color: #8a1c1c; }
+    .privacy { padding: 12px; border-radius: 8px; background: #effbf5; color: #155d3b; }
+  </style>
+  </head>
+<body>
+  <h1>X 回复副驾驶设置</h1>
+  <p>第一版只负责读取当前可见帖子和生成草稿，不会自动填写或发布回复。</p>
+  <div class="privacy">API Key 仅保存在本机 Chrome storage.local。未配置 Key 时，扩展使用本地演示草稿，不会发起模型请求。</div>
+
+  <label>
+    模型服务商
+    <select id="provider">
+      <option value="openai-compatible">OpenAI 兼容接口</option>
+      <option value="deepseek">DeepSeek</option>
+    </select>
+  </label>
+  <label>
+    接口地址
+    <input id="endpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions">
+  </label>
+  <label>
+    模型名称
+    <input id="model" list="modelOptions" type="text" placeholder="deepseek-chat">
+    <datalist id="modelOptions"></datalist>
+  <label>
+    API Key
+    <input id="apiKey" type="password" autocomplete="off" placeholder="sk-…">
+  </label>
+  <button id="fetchModels" class="secondary" type="button">从官方获取模型</button>
+  <button id="testConnection" class="secondary" type="button">测试连接</button>
+  <div id="connectionStatus" aria-live="polite">尚未测试连接</div>
+  <br>
+  <button id="save">保存设置</button><span id="status"></span>
+  <script src="options.js"></script>
+</body>
+</html>

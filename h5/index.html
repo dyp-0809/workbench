@@ -51,22 +51,29 @@
             <span class="choice-label">回复风格</span>
             <div class="choice-scroller" role="group" aria-label="回复风格">
               <button class="choice-tag active" type="button" data-choice-target="styleSelect" data-choice-value="insightful" aria-pressed="true">补充观点</button>
+              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="witty" aria-pressed="false">轻松幽默</button>
               <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="practical" aria-pressed="false">实操建议</button>
-              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="question" aria-pressed="false">提问式</button>
+              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="friendly" aria-pressed="false">友好支持</button>
               <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="concise" aria-pressed="false">极简回应</button>
               <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="professional" aria-pressed="false">专业分析</button>
-              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="friendly" aria-pressed="false">友好支持</button>
+              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="question" aria-pressed="false">提问式</button>
               <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="contrarian" aria-pressed="false">温和反驳</button>
-              <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="witty" aria-pressed="false">轻松幽默</button>
               <button class="choice-tag" type="button" data-choice-target="styleSelect" data-choice-value="sarcastic" aria-pressed="false">讽刺</button>
             </div>
-            <select id="styleSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="insightful">补充观点</option><option value="practical">实操建议</option><option value="question">提问式</option><option value="concise">极简回应</option><option value="professional">专业分析</option><option value="friendly">友好支持</option><option value="contrarian">温和反驳</option><option value="witty">轻松幽默</option><option value="sarcastic">讽刺</option></select>
+            <select id="styleSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="insightful">补充观点</option><option value="witty">轻松幽默</option><option value="practical">实操建议</option><option value="friendly">友好支持</option><option value="concise">极简回应</option><option value="professional">专业分析</option><option value="question">提问式</option><option value="contrarian">温和反驳</option><option value="sarcastic">讽刺</option></select>
           </div>
         </div>
         <div class="human-tone-control">
           <div class="human-tone-heading">
             <label for="humanToneRange">人味程度</label>
-            <output id="humanToneValue" for="humanToneRange">平衡 · 3/5</output>
+            <div class="human-tone-summary">
+              <button id="humanToneInfoButton" class="human-tone-info-button" type="button" aria-expanded="false" aria-controls="humanToneDescription">说明</button>
+              <output id="humanToneValue" for="humanToneRange">平衡 · 3/5</output>
+            </div>
+          </div>
+          <div id="humanToneDescription" class="human-tone-description hidden">
+            <strong>档位说明</strong>
+            <ol id="humanToneDescriptionList"></ol>
           </div>
           <input id="humanToneRange" type="range" min="1" max="5" step="1" value="3" aria-label="人味程度">
           <div class="human-tone-scale" aria-hidden="true"><span>克制</span><span>强人味</span></div>

@@ -1,4 +1,4 @@
-const { languageNames, humanToneNames, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
@@ -31,6 +31,23 @@ function setChoiceValue(selectId, value) {
 function initializeHumanToneControl() {
   const range = $('#humanToneRange');
   const output = $('#humanToneValue');
+  const infoButton = $('#humanToneInfoButton');
+  const description = $('#humanToneDescription');
+  const descriptionList = $('#humanToneDescriptionList');
+
+  for (const level of Object.keys(humanToneNames)) {
+    const item = document.createElement('li');
+    item.textContent = `${humanToneNames[level]} · ${level}/5：${humanToneDescriptions[level]}`;
+    descriptionList.append(item);
+  }
+
+  infoButton.addEventListener('click', () => {
+    const isExpanded = infoButton.getAttribute('aria-expanded') === 'true';
+    infoButton.setAttribute('aria-expanded', String(!isExpanded));
+    infoButton.textContent = isExpanded ? '说明' : '收起';
+    description.classList.toggle('hidden', isExpanded);
+  });
+
   const update = () => {
     const label = `${humanToneNames[range.value]} · ${range.value}/5`;
     output.textContent = label;

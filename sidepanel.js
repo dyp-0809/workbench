@@ -30,6 +30,23 @@ function setChoiceValue(selectId, value) {
 function initializeHumanToneControl() {
   const range = $('#humanToneRange');
   const output = $('#humanToneValue');
+  const infoButton = $('#humanToneInfoButton');
+  const description = $('#humanToneDescription');
+  const descriptionList = $('#humanToneDescriptionList');
+
+  for (const level of Object.keys(humanToneNames)) {
+    const item = document.createElement('li');
+    item.textContent = `${humanToneNames[level]} · ${level}/5：${humanToneDescriptions[level]}`;
+    descriptionList.append(item);
+  }
+
+  infoButton.addEventListener('click', () => {
+    const isExpanded = infoButton.getAttribute('aria-expanded') === 'true';
+    infoButton.setAttribute('aria-expanded', String(!isExpanded));
+    infoButton.textContent = isExpanded ? '说明' : '收起';
+    description.classList.toggle('hidden', isExpanded);
+  });
+
   const update = () => {
     const label = `${humanToneNames[range.value]} · ${range.value}/5`;
     output.textContent = label;
@@ -41,7 +58,7 @@ function initializeHumanToneControl() {
 
 
 
-const { languageNames, humanToneNames, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
 
 const styleNames = {

@@ -1,13 +1,18 @@
 (function (root) {
   const languageNames = Object.freeze({ zh: '中文', en: 'English', vi: 'Tiếng Việt', ja: '日本語', ko: '한국어' });
   const humanToneNames = Object.freeze({ 1: '克制', 2: '自然', 3: '平衡', 4: '鲜活', 5: '强人味' });
-  const humanToneInstructions = Object.freeze({
+  const humanToneDescriptions = Object.freeze({
     1: '保持克制和清晰，允许少量口语，但整体偏稳重。',
     2: '使用自然口语和短句，减少书面连接词，不刻意制造个性。',
     3: '像认真读完原帖的人临场回复：有自然停顿、口语化转折和具体措辞，允许轻微不完美。',
     4: '表达更鲜活，有明显节奏和个人判断；可以使用自然的省略、反问或轻幽默，但不要表演感。',
     5: '个性最强，允许短促句式、俏皮表达和鲜明态度，但不堆网络黑话、不冒犯、不夸张表演。'
   });
+  const unaccentedVietnameseWords = new Set([
+    'anh', 'bai', 'ban', 'chao', 'cho', 'cua', 'day', 'den', 'duoc', 'em',
+    'khi', 'khong', 'lam', 'moi', 'mot', 'muon', 'nguoi', 'nhu', 'nhung',
+    'rat', 'tieng', 'toi', 'trong', 'viet', 'voi', 'xin'
+  ]);
   const ideaTypeNames = Object.freeze({
     all: '全部',
     code: '代码',
@@ -23,24 +28,24 @@
   });
 
   function detectReplyLanguage(text) {
-    const counts = {
-      zh: 0,
-      ja: 0,
-      ko: (text.match(/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/gu) ?? []).length,
-      vi: 0,
-      en: 0
-    };
-    const japaneseCharacters = /[\u3040-\u30ff\uff66-\uff9d]/u;
-    for (const segment of text.match(/[\u3040-\u30ff\uff66-\uff9d\u3400-\u9fff]+/gu) ?? []) {
-      counts[japaneseCharacters.test(segment) ? 'ja' : 'zh'] += segment.length;
+    const japaneseCount = (text.match(/[\u3040-\u30ff\uff66-\uff9d]/gu) ?? []).length;
+    const koreanCount = (text.match(/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/gu) ?? []).length;
+    const vietnameseCount = (text.match(/[\u0102-\u0103\u0110-\u0111\u0128-\u0129\u0168-\u0169\u01a0-\u01b0\u1ea0-\u1ef9]/gu) ?? []).length;
+
+    // X 的用户名和操作文案常带大量英文；明确的文字特征比页面噪声更能代表帖子语言。
+    if (japaneseCount || koreanCount || vietnameseCount) {
+      if (japaneseCount >= koreanCount && japaneseCount >= vietnameseCount) return 'ja';
+      if (koreanCount >= vietnameseCount) return 'ko';
+      return 'vi';
     }
-    const vietnameseCharacters = /[\u0102-\u0103\u0110-\u0111\u0128-\u0129\u0168-\u0169\u01a0-\u01b0\u1ea0-\u1ef9]/u;
-    for (const word of text.match(/\p{Script=Latin}+/gu) ?? []) {
-      counts[vietnameseCharacters.test(word) ? 'vi' : 'en'] += word.length;
-    }
-    const rankedLanguages = Object.entries(counts).sort((left, right) => right[1] - left[1]);
-    const [primaryLanguage, primaryCount] = rankedLanguages[0];
-    return primaryCount > rankedLanguages[1][1] ? primaryLanguage : 'en';
+
+    const latinWords = text.toLocaleLowerCase('vi').match(/\p{Script=Latin}+/gu) ?? [];
+    const vietnameseSignals = new Set(latinWords.filter((word) => unaccentedVietnameseWords.has(word)));
+    if (vietnameseSignals.size >= 3) return 'vi';
+
+    const chineseCount = (text.match(/[\u3400-\u9fff]/gu) ?? []).length;
+    const englishCount = latinWords.reduce((total, word) => total + word.length, 0);
+    return chineseCount > englishCount ? 'zh' : 'en';
   }
 
   function buildReplyPrompt(language, style, humanTone = 3) {
@@ -59,7 +64,7 @@
 9. 遵守 X 规则：不得生成仇恨、威胁、骚扰、欺凌、恶意羞辱、暴露个人隐私、垃圾信息或误导性内容；讽刺只能针对观点、现象或行为，不针对受保护特征、个人隐私或弱势群体。
 10. 讽刺风格保持可理解、克制和可撤回：不把讽刺包装成事实，不鼓励围攻，不使用人身攻击；如果原帖上下文不足以安全讽刺，改为温和幽默或建议不回复。
 风险边界：不对医疗、法律、投资、政治事件给出确定性判断；没有足够上下文时建议不回复。
-人味程度为 ${normalizedHumanTone}/5（${humanToneNames[normalizedHumanTone]}）：${humanToneInstructions[normalizedHumanTone]}
+人味程度为 ${normalizedHumanTone}/5（${humanToneNames[normalizedHumanTone]}）：${humanToneDescriptions[normalizedHumanTone]}
 所有等级都要避免公文腔、客服腔、总结腔和 AI 套话，尤其避免“确实”“值得关注”“从某种意义上”“这提醒我们”等模板开场；不要为了显得有人味而虚构经历、身份、情绪或事实。
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
 只输出 JSON：{"shouldReply":boolean,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
@@ -125,6 +130,7 @@
   root.XReplyCopilotIdeaEngine = Object.freeze({
     languageNames,
     humanToneNames,
+    humanToneDescriptions,
     detectReplyLanguage,
     ideaTypeNames,
     buildReplyPrompt,

@@ -33,7 +33,8 @@ const styleNames = {
   professional: '专业分析',
   friendly: '友好支持',
   contrarian: '温和反驳',
-  witty: '轻松幽默'
+  witty: '轻松幽默',
+  sarcastic: '讽刺'
 };
 
 
@@ -620,7 +621,8 @@ function demoDrafts(language, style) {
       professional: ['从实施角度看，这个问题至少涉及目标定义、数据治理和责任归属三个层面。', '如果没有明确评估指标，工具上线后很难判断它是否真的解决了问题。', '更稳妥的做法是先验证业务流程，再评估模型能力。'],
       friendly: ['这个方向很有意思，尤其是你提到的这一点值得继续展开。', '我也遇到过类似情况，先从一个小场景开始通常会轻松很多。', '这个思路挺实用的，期待看到后续实践结果。'],
       contrarian: ['我基本同意，但可能还需要补一个前提：这个方法不一定适合所有团队。', '这里也许不能只看结果，还要看长期维护成本。', '换个角度看，问题可能不在工具，而在一开始定义错了目标。'],
-      witty: ['工具很忙，但真正需要加班的往往是需求定义。', '先把问题说清楚，模型才不用参加猜谜比赛。', '听起来像技术问题，最后通常会变成维护责任问题。']
+      witty: ['工具很忙，但真正需要加班的往往是需求定义。', '先把问题说清楚，模型才不用参加猜谜比赛。', '听起来像技术问题，最后通常会变成维护责任问题。'],
+      sarcastic: ['当然，先选最强的模型，问题定义和维护责任以后再“自动解决”。', '如果把“上线了”当成“解决了”，那这个方案确实无可挑剔。', '看起来只差一个按钮；至于谁维护、怎么验证，暂时交给未来的自己。']
     },
     en: {
       insightful: ['One overlooked point here is that defining the problem boundary usually matters more than choosing a stronger model.', 'To make this practical, I would first clarify who maintains the content, what is trusted, and who can access it.', 'The real question may not be whether it can be built, but who keeps it useful over time.'],
@@ -630,7 +632,8 @@ function demoDrafts(language, style) {
       professional: ['From an implementation perspective, this involves goal definition, data governance, and ownership.', 'Without clear evaluation criteria, it is hard to know whether the tool solved the original problem.', 'A safer approach is to validate the workflow before optimizing model capability.'],
       friendly: ['This is an interesting direction, especially the point you raised here.', 'I have seen something similar. Starting with a small use case usually makes the process much easier.', 'This is a practical angle. I would be interested to see what you learn from the next step.'],
       contrarian: ['I mostly agree, but one condition matters: this may not work equally well for every team.', 'The outcome is only part of the story; long-term maintenance cost matters too.', 'From another angle, the issue may be the original goal rather than the tool.'],
-      witty: ['The tool may be ready, but the requirements are still working overtime.', 'Clarify the problem first, so the model does not have to play a guessing game.', 'It sounds like a technical problem until someone asks who will maintain it.']
+      witty: ['The tool may be ready, but the requirements are still working overtime.', 'Clarify the problem first, so the model does not have to play a guessing game.', 'It sounds like a technical problem until someone asks who will maintain it.'],
+      sarcastic: ['Of course, choose the strongest model first; the problem definition and ownership can “solve themselves” later.', 'If “it shipped” counts as “it worked,” this plan is flawless.', 'It looks like one button is missing; validation and ownership can wait for future us.']
     },
     vi: {
       insightful: ['Một điểm dễ bị bỏ qua là xác định rõ phạm vi vấn đề thường quan trọng hơn việc chọn một mô hình mạnh hơn.', 'Để triển khai thực tế, trước tiên nên làm rõ ai duy trì nội dung, thông tin nào đáng tin cậy và ai được quyền truy cập.', 'Câu hỏi quan trọng không chỉ là có thể xây dựng hay không, mà là ai sẽ duy trì giá trị của nó theo thời gian.'],
@@ -640,7 +643,8 @@ function demoDrafts(language, style) {
       professional: ['Từ góc độ triển khai, vấn đề này liên quan đến mục tiêu, quản trị dữ liệu và trách nhiệm vận hành.', 'Nếu không có tiêu chí đánh giá rõ ràng, rất khó biết công cụ có giải quyết đúng vấn đề ban đầu hay không.', 'Cách an toàn hơn là kiểm chứng quy trình trước khi tối ưu năng lực mô hình.'],
       friendly: ['Đây là một hướng khá thú vị, đặc biệt là điểm bạn vừa đề cập.', 'Tôi cũng từng gặp tình huống tương tự. Bắt đầu từ một trường hợp nhỏ thường sẽ dễ hơn nhiều.', 'Góc nhìn này khá thực tế. Tôi rất muốn biết kết quả của bước tiếp theo.'],
       contrarian: ['Tôi phần lớn đồng ý, nhưng cần thêm một điều kiện: cách này không nhất thiết phù hợp với mọi đội nhóm.', 'Kết quả chỉ là một phần; chi phí duy trì trong dài hạn cũng rất quan trọng.', 'Nhìn từ góc khác, vấn đề có thể nằm ở mục tiêu ban đầu chứ không phải ở công cụ.'],
-      witty: ['Công cụ có thể đã sẵn sàng, nhưng phần yêu cầu vẫn đang làm thêm giờ.', 'Hãy làm rõ vấn đề trước để mô hình không phải chơi trò đoán ý.', 'Nghe giống vấn đề kỹ thuật, cho đến khi có người hỏi ai sẽ duy trì nó.']
+      witty: ['Công cụ có thể đã sẵn sàng, nhưng phần yêu cầu vẫn đang làm thêm giờ.', 'Hãy làm rõ vấn đề trước để mô hình không phải chơi trò đoán ý.', 'Nghe giống vấn đề kỹ thuật, cho đến khi có người hỏi ai sẽ duy trì nó.'],
+      sarcastic: ['Tất nhiên cứ chọn mô hình mạnh nhất trước; định nghĩa vấn đề và trách nhiệm cứ để tự giải quyết sau.', 'Nếu “đã triển khai” đồng nghĩa với “đã hiệu quả”, thì kế hoạch này hoàn hảo.', 'Có vẻ chỉ còn thiếu một nút bấm; việc kiểm chứng và người phụ trách để tương lai lo.']
     }
   };
   const languageDrafts = draftsByLanguage[language] ?? draftsByLanguage.zh;

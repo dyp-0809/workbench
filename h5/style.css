@@ -18,9 +18,13 @@ h2 { margin: 0; font-size: 19px; }
   right: 18px;
   bottom: 72px;
   z-index: 9;
-  padding: 10px 13px;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  padding: 0;
   border: 1px solid #c9d9e5;
-  border-radius: 999px;
+  border-radius: 50%;
   color: #fff;
   background: #0f1419;
   box-shadow: 0 8px 20px rgba(15, 20, 25, .2);

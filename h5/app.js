@@ -54,8 +54,8 @@ if (localStorage.getItem('deepseekApiKey')) testConnection();
 
 async function pastePost() {
   const input = $('#postInput');
-  input.value = '';
   showError('');
+  input.focus();
   try {
     if (!window.isSecureContext || !navigator.clipboard?.readText) {
       throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用 iPhone 系统“粘贴”。');
@@ -64,7 +64,6 @@ async function pastePost() {
     input.value = text;
   } catch (error) {
     showError(error.message || '读取粘贴板失败，请在输入框中使用 iPhone 系统“粘贴”。');
-    input.focus();
   }
 }
 

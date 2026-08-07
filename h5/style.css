@@ -13,6 +13,25 @@ h2 { margin: 0; font-size: 19px; }
 .tab-button { padding: 10px 4px; margin-right: 14px; border-bottom: 2px solid transparent; }
 .tab-button.active { color: #0f1419; border-bottom-color: #0f1419; font-weight: 700; }
 .text-button { padding: 7px 4px; color: #536471; }
+.floating-paste-button {
+  position: fixed;
+  right: 18px;
+  bottom: 72px;
+  z-index: 9;
+  padding: 10px 13px;
+  border: 1px solid #c9d9e5;
+  border-radius: 999px;
+  color: #fff;
+  background: #0f1419;
+  box-shadow: 0 8px 20px rgba(15, 20, 25, .2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+.floating-paste-button:hover { background: #1d9bf0; }
+.floating-paste-button:active { transform: translateY(1px); }
+
 .card { margin-bottom: 14px; padding: 16px; border: 1px solid #dce6ef; border-radius: 14px; background: #fff; box-shadow: 0 4px 18px rgba(34, 54, 74, .06); }
 .model-status { display: grid; gap: 6px; margin: -2px 0 12px; padding: 9px 12px; border: 1px solid #dce6ef; border-radius: 9px; background: #fff; color: #536471; font-size: 14px; }
 .connection-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

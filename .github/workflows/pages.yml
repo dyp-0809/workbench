@@ -39,3 +39,58 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Notify Telegram on success
+        if: ${{ steps.deployment.outcome == 'success' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PAGES_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          message="$(cat <<EOF
+          ✅ X Assistant 部署成功
+
+          分支：${GITHUB_REF_NAME}
+          提交：${GITHUB_SHA::7}
+          提交信息：${GITHUB_COMMIT_MESSAGE}
+
+          访问地址：
+          ${PAGES_URL}
+          EOF
+          )"
+
+          curl --fail-with-body \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg chat_id "$TELEGRAM_CHAT_ID" \
+              --arg text "$message" \
+              '{chat_id: $chat_id, text: $text, disable_web_page_preview: false}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
+      - name: Notify Telegram on failure
+        if: ${{ failure() && steps.deployment.outcome == 'failure' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ACTIONS_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="$(cat <<EOF
+          ❌ X Assistant 部署失败
+
+          分支：${GITHUB_REF_NAME}
+          提交：${GITHUB_SHA::7}
+
+          请查看 GitHub Actions 日志：
+          ${ACTIONS_URL}
+          EOF
+          )"
+
+          curl --fail-with-body \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg chat_id "$TELEGRAM_CHAT_ID" \
+              --arg text "$message" \
+              '{chat_id: $chat_id, text: $text, disable_web_page_preview: true}')" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"

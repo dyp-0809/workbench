@@ -48,6 +48,7 @@ $('#clearPostButton').addEventListener('click', () => {
   $('#postInput').focus();
 });
 $('#pastePostButton').addEventListener('click', pastePost);
+$('#floatingPasteButton').addEventListener('click', pastePost);
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
 

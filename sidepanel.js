@@ -7,6 +7,21 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+initializeChoiceTags();
+
+function initializeChoiceTags() {
+  for (const button of document.querySelectorAll('[data-choice-target]')) {
+    button.addEventListener('click', () => {
+      const select = document.querySelector(`#${button.dataset.choiceTarget}`);
+      select.value = button.dataset.choiceValue;
+      for (const item of document.querySelectorAll(`[data-choice-target="${button.dataset.choiceTarget}"]`)) {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', String(active));
+      }
+    });
+  }
+}
 
 const { languageNames, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
 

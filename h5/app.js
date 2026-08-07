@@ -7,6 +7,21 @@ let currentIdeaType = 'all';
 let ideasInitialized = false;
 
 $('#ideaLanguageSelect').value = 'zh';
+initializeChoiceTags();
+
+function initializeChoiceTags() {
+  for (const button of document.querySelectorAll('[data-choice-target]')) {
+    button.addEventListener('click', () => {
+      const select = document.querySelector(`#${button.dataset.choiceTarget}`);
+      select.value = button.dataset.choiceValue;
+      for (const item of document.querySelectorAll(`[data-choice-target="${button.dataset.choiceTarget}"]`)) {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', String(active));
+      }
+    });
+  }
+}
 
 for (const button of document.querySelectorAll('[data-tab]')) {
   button.addEventListener('click', () => {

@@ -40,57 +40,55 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Notify Telegram on success
+      - name: Notify Bark on success
         if: ${{ steps.deployment.outcome == 'success' }}
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_SERVER_URL: ${{ secrets.BARK_SERVER_URL || 'https://api.day.app' }}
           PAGES_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
-          message="$(cat <<EOF
-          ✅ X Assistant 部署成功
-
+          title="X Assistant 部署成功"
+          body="$(cat <<EOF
           分支：${GITHUB_REF_NAME}
           提交：${GITHUB_SHA::7}
           提交信息：${GITHUB_COMMIT_MESSAGE}
-
-          访问地址：
-          ${PAGES_URL}
+          访问地址：${PAGES_URL}
           EOF
           )"
 
           curl --fail-with-body \
             --request POST \
-            --header "Content-Type: application/json" \
+            --header "Content-Type: application/json; charset=utf-8" \
             --data "$(jq -n \
-              --arg chat_id "$TELEGRAM_CHAT_ID" \
-              --arg text "$message" \
-              '{chat_id: $chat_id, text: $text, disable_web_page_preview: false}')" \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+              --arg device_key "$BARK_KEY" \
+              --arg title "$title" \
+              --arg body "$body" \
+              --arg url "$PAGES_URL" \
+              '{device_key: $device_key, title: $title, body: $body, url: $url, level: "active"}')" \
+            "${BARK_SERVER_URL%/}/push"
 
-      - name: Notify Telegram on failure
+      - name: Notify Bark on failure
         if: ${{ failure() && steps.deployment.outcome == 'failure' }}
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_SERVER_URL: ${{ secrets.BARK_SERVER_URL || 'https://api.day.app' }}
           ACTIONS_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          message="$(cat <<EOF
-          ❌ X Assistant 部署失败
-
+          title="X Assistant 部署失败"
+          body="$(cat <<EOF
           分支：${GITHUB_REF_NAME}
           提交：${GITHUB_SHA::7}
-
-          请查看 GitHub Actions 日志：
-          ${ACTIONS_URL}
+          请查看 Actions 日志：${ACTIONS_URL}
           EOF
           )"
 
           curl --fail-with-body \
             --request POST \
-            --header "Content-Type: application/json" \
+            --header "Content-Type: application/json; charset=utf-8" \
             --data "$(jq -n \
-              --arg chat_id "$TELEGRAM_CHAT_ID" \
-              --arg text "$message" \
-              '{chat_id: $chat_id, text: $text, disable_web_page_preview: true}')" \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+              --arg device_key "$BARK_KEY" \
+              --arg title "$title" \
+              --arg body "$body" \
+              --arg url "$ACTIONS_URL" \
+              '{device_key: $device_key, title: $title, body: $body, url: $url, level: "critical"}')" \
+            "${BARK_SERVER_URL%/}/push"

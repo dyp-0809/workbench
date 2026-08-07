@@ -42,8 +42,10 @@
               <button class="choice-tag active" type="button" data-choice-target="languageSelect" data-choice-value="zh" aria-pressed="true">中文</button>
               <button class="choice-tag" type="button" data-choice-target="languageSelect" data-choice-value="en" aria-pressed="false">English</button>
               <button class="choice-tag" type="button" data-choice-target="languageSelect" data-choice-value="vi" aria-pressed="false">Tiếng Việt</button>
+              <button class="choice-tag" type="button" data-choice-target="languageSelect" data-choice-value="ja" aria-pressed="false">日本語</button>
+              <button class="choice-tag" type="button" data-choice-target="languageSelect" data-choice-value="ko" aria-pressed="false">한국어</button>
             </div>
-            <select id="languageSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="zh">中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option></select>
+            <select id="languageSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="zh">中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option><option value="ja">日本語</option><option value="ko">한국어</option></select>
           </div>
           <div class="choice-group">
             <span class="choice-label">回复风格</span>
@@ -60,6 +62,14 @@
             </div>
             <select id="styleSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="insightful">补充观点</option><option value="practical">实操建议</option><option value="question">提问式</option><option value="concise">极简回应</option><option value="professional">专业分析</option><option value="friendly">友好支持</option><option value="contrarian">温和反驳</option><option value="witty">轻松幽默</option><option value="sarcastic">讽刺</option></select>
           </div>
+        </div>
+        <div class="human-tone-control">
+          <div class="human-tone-heading">
+            <label for="humanToneRange">人味程度</label>
+            <output id="humanToneValue" for="humanToneRange">平衡 · 3/5</output>
+          </div>
+          <input id="humanToneRange" type="range" min="1" max="5" step="1" value="3" aria-label="人味程度">
+          <div class="human-tone-scale" aria-hidden="true"><span>克制</span><span>强人味</span></div>
         </div>
         <textarea id="profileInput" rows="3" placeholder="可选：你的账号定位，例如：分享企业知识库和 AI 落地经验，不做夸张营销。"></textarea>
         <button id="draftButton" class="primary-button" type="button">生成评论草稿</button>
@@ -124,7 +134,7 @@
       </section>
     </section>
 
-  <button id="floatingPasteButton" class="floating-paste-button" type="button" aria-label="读取粘贴板" title="读取粘贴板">粘贴</button>
+  <button id="floatingQuickReplyButton" class="floating-quick-reply-button" type="button" aria-label="快速回复" title="快速回复">快速回复</button>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <p id="errorMessage" class="error hidden"></p>
   </main>

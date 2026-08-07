@@ -1,4 +1,4 @@
-const { languageNames, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
@@ -8,37 +8,55 @@ let ideasInitialized = false;
 
 $('#ideaLanguageSelect').value = 'zh';
 initializeChoiceTags();
+initializeHumanToneControl();
 
 function initializeChoiceTags() {
   for (const button of document.querySelectorAll('[data-choice-target]')) {
     button.addEventListener('click', () => {
-      const select = document.querySelector(`#${button.dataset.choiceTarget}`);
-      select.value = button.dataset.choiceValue;
-      for (const item of document.querySelectorAll(`[data-choice-target="${button.dataset.choiceTarget}"]`)) {
-        const active = item === button;
-        item.classList.toggle('active', active);
-        item.setAttribute('aria-pressed', String(active));
-      }
+      setChoiceValue(button.dataset.choiceTarget, button.dataset.choiceValue);
     });
   }
 }
+
+function setChoiceValue(selectId, value) {
+  const select = document.querySelector(`#${selectId}`);
+  const selectedValue = [...select.options].some((option) => option.value === value) ? value : 'en';
+  select.value = selectedValue;
+  for (const item of document.querySelectorAll(`[data-choice-target="${selectId}"]`)) {
+    const active = item.dataset.choiceValue === selectedValue;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-pressed', String(active));
+  }
+}
+function initializeHumanToneControl() {
+  const range = $('#humanToneRange');
+  const output = $('#humanToneValue');
+  const update = () => {
+    const label = `${humanToneNames[range.value]} · ${range.value}/5`;
+    output.textContent = label;
+    range.setAttribute('aria-valuetext', label);
+  };
+  range.addEventListener('input', update);
+  update();
+}
+
 
 for (const button of document.querySelectorAll('[data-tab]')) {
   button.addEventListener('click', () => {
     const tab = button.dataset.tab;
     for (const item of document.querySelectorAll('[data-tab]')) item.classList.toggle('active', item === button);
     for (const panel of document.querySelectorAll('[data-tab-panel]')) panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
-    setFloatingPasteVisibility(tab);
+    setFloatingQuickReplyVisibility(tab);
     if (tab === 'ideas' && !ideasInitialized) {
       ideasInitialized = true;
       generateIdeas();
     }
   });
 }
-setFloatingPasteVisibility('reply');
+setFloatingQuickReplyVisibility('reply');
 
-function setFloatingPasteVisibility(tab) {
-  $('#floatingPasteButton').classList.toggle('hidden', tab !== 'reply');
+function setFloatingQuickReplyVisibility(tab) {
+  $('#floatingQuickReplyButton').classList.toggle('hidden', tab !== 'reply');
 }
 
 $('#settingsButton').addEventListener('click', () => {
@@ -71,22 +89,43 @@ $('#clearPostButton').addEventListener('click', () => {
   $('#postInput').focus();
 });
 $('#pastePostButton').addEventListener('click', pastePost);
-$('#floatingPasteButton').addEventListener('click', pastePost);
+$('#floatingQuickReplyButton').addEventListener('click', quickReply);
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
 
-async function pastePost() {
+async function replacePostFromClipboard() {
   const input = $('#postInput');
   input.value = '';
   showError('');
+  if (!window.isSecureContext || !navigator.clipboard?.readText) {
+    throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用 iPhone 系统“粘贴”。');
+  }
+  const text = await navigator.clipboard.readText();
+  input.value = text;
+  if (!text.trim()) throw new Error('粘贴板中没有可用的帖子内容。');
+  setChoiceValue('languageSelect', detectReplyLanguage(text));
+  return text;
+}
+
+async function pastePost() {
   try {
-    if (!window.isSecureContext || !navigator.clipboard?.readText) {
-      throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用 iPhone 系统“粘贴”。');
-    }
-    const text = await navigator.clipboard.readText();
-    input.value = text;
+    await replacePostFromClipboard();
   } catch (error) {
     showError(error.message || '读取粘贴板失败，请在输入框中使用 iPhone 系统“粘贴”。');
+  }
+}
+
+async function quickReply() {
+  const button = $('#floatingQuickReplyButton');
+  setLoading(button, true, '处理中…');
+  try {
+    await replacePostFromClipboard();
+    await generateDrafts();
+  } catch (error) {
+    showError(error.message || '快速回复失败，请稍后重试。');
+    showToast('快速回复失败，请查看错误信息', 'error');
+  } finally {
+    setLoading(button, false, '快速回复');
   }
 }
 
@@ -149,13 +188,15 @@ async function generateDrafts() {
   try {
     const language = $('#languageSelect').value;
     const style = $('#styleSelect').value;
+    const humanTone = Number($('#humanToneRange').value);
     const settings = getSettings();
     const result = await requestModel(settings, {
       accountProfile: $('#profileInput').value.trim() || '未提供账号定位，请保持克制、具体、非营销化。',
       targetLanguage: languageNames[language],
       preferredStyle: styleNames[style],
+      humanTone: `${humanTone}/5（${humanToneNames[humanTone]}）`,
       post
-    }, buildReplyPrompt(languageNames[language], styleNames[style]));
+    }, buildReplyPrompt(languageNames[language], styleNames[style], humanTone));
     renderReply(result);
     showToast('评论生成成功', 'success');
   } catch (error) {
@@ -378,32 +419,38 @@ function copyButton(label, value) {
 }
 
 async function copyText(value) {
+  let copied = false;
   if (window.isSecureContext && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
-      return true;
+      copied = true;
     } catch {
       // HTTP 页面或 iOS 权限策略可能拒绝 Clipboard API，继续使用兼容回退。
     }
   }
 
-  const textarea = document.createElement('textarea');
-  textarea.value = value;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.top = '0';
-  textarea.style.left = '-9999px';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  let copied = false;
-  try {
-    copied = document.execCommand('copy');
-  } finally {
-    document.body.removeChild(textarea);
+  if (!copied) {
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    try {
+      copied = document.execCommand('copy');
+    } catch {
+      copied = false;
+    } finally {
+      document.body.removeChild(textarea);
+    }
   }
+
+  showToast(copied ? '复制成功' : '复制失败，请手动选择文字', copied ? 'success' : 'error');
   return copied;
 }
 function setLoading(button, loading, text) { button.disabled = loading; button.textContent = text; }

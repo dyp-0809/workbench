@@ -339,6 +339,12 @@ textarea::placeholder { color: #98a6b3; }
 .choice-tag { flex: 0 0 auto; padding: 6px 9px; border: 1px solid #d6e0e8; border-radius: 999px; color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 700; white-space: nowrap; }
 .choice-tag.active { border-color: var(--ink); color: #fff; background: var(--ink); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.human-tone-control { margin: 12px 0; }
+.human-tone-heading, .human-tone-scale { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.human-tone-heading label { color: var(--muted); font-size: 11px; font-weight: 700; }
+.human-tone-heading output { color: var(--ink); font-size: 11px; font-weight: 800; }
+.human-tone-control input[type="range"] { width: 100%; margin: 8px 0 3px; padding: 0; border: 0; accent-color: var(--ink); box-shadow: none; }
+.human-tone-scale { color: var(--muted); font-size: 10px; }
 .idea-language-label { display: grid; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 10px; font-weight: 800; }
 .idea-type-filters { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 5px; scrollbar-width: thin; }
 .idea-type-button { flex: 0 0 auto; padding: 6px 9px; border: 1px solid #d6e0e8; border-radius: 999px; color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 700; }

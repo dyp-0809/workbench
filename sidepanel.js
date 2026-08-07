@@ -12,18 +12,37 @@ initializeChoiceTags();
 function initializeChoiceTags() {
   for (const button of document.querySelectorAll('[data-choice-target]')) {
     button.addEventListener('click', () => {
-      const select = document.querySelector(`#${button.dataset.choiceTarget}`);
-      select.value = button.dataset.choiceValue;
-      for (const item of document.querySelectorAll(`[data-choice-target="${button.dataset.choiceTarget}"]`)) {
-        const active = item === button;
-        item.classList.toggle('active', active);
-        item.setAttribute('aria-pressed', String(active));
-      }
+      setChoiceValue(button.dataset.choiceTarget, button.dataset.choiceValue);
     });
   }
 }
 
-const { languageNames, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+function setChoiceValue(selectId, value) {
+  const select = document.querySelector(`#${selectId}`);
+  const selectedValue = [...select.options].some((option) => option.value === value) ? value : 'en';
+  select.value = selectedValue;
+  for (const item of document.querySelectorAll(`[data-choice-target="${selectId}"]`)) {
+    const active = item.dataset.choiceValue === selectedValue;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-pressed', String(active));
+  }
+}
+function initializeHumanToneControl() {
+  const range = $('#humanToneRange');
+  const output = $('#humanToneValue');
+  const update = () => {
+    const label = `${humanToneNames[range.value]} · ${range.value}/5`;
+    output.textContent = label;
+    range.setAttribute('aria-valuetext', label);
+  };
+  range.addEventListener('input', update);
+  update();
+}
+
+
+
+const { languageNames, humanToneNames, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+initializeHumanToneControl();
 
 const styleNames = {
   insightful: '补充观点',
@@ -36,6 +55,14 @@ const styleNames = {
   witty: '轻松幽默',
   sarcastic: '讽刺'
 };
+const MODEL_REQUEST_TIMEOUT_MS = 60000;
+
+function formatModelRequestError(error) {
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || /aborted|timeout|timed out/i.test(error?.message || '')) {
+    return '模型响应超时或请求被浏览器中止，请稍后重试；如果持续出现，请检查网络、API Key 和模型服务状态。';
+  }
+  return error?.message || '模型请求失败，请稍后重试。';
+}
 
 
 
@@ -168,8 +195,30 @@ async function checkModelConnection(button, busyLabel, shouldList = false) {
   }
 }
 $('#extractButton').addEventListener('click', extractPost);
+$('#clearPostButton').addEventListener('click', clearPost);
 $('#draftButton').addEventListener('click', generateDrafts);
+$('#postCard').addEventListener('input', () => {
+  const text = $('#postCard').textContent.trim();
+  if (!text) {
+    state.post = null;
+    return;
+  }
+  setChoiceValue('languageSelect', detectReplyLanguage(text));
+  state.post = state.post
+    ? { ...state.post, contextText: text }
+    : { text, contextText: text };
+  $('#postState').classList.add('hidden');
+});
 
+function clearPost() {
+  state.post = null;
+  $('#postCard').textContent = '';
+  $('#postCard').classList.remove('hidden');
+  $('#postState').textContent = '已清空，可以重新读取或直接粘贴其他信息。';
+  $('#postState').classList.remove('hidden');
+  $('#resultSection').classList.add('hidden');
+  setError('');
+}
 async function extractPost() {
   setError('');
   setLoading($('#extractButton'), true, '读取中…');
@@ -182,7 +231,7 @@ async function extractPost() {
     $('#postState').classList.add('hidden');
     $('#postCard').classList.remove('hidden');
     $('#postCard').textContent = result.post.contextText || result.post.text;
-    $('#draftButton').disabled = false;
+    setChoiceValue('languageSelect', detectReplyLanguage($('#postCard').textContent));
     $('#resultSection').classList.add('hidden');
   } catch (error) {
     setError(error.message);
@@ -270,7 +319,15 @@ function formatNumber(value) {
 }
 
 async function generateDrafts() {
-  if (!state.post) return;
+  const postText = $('#postCard').textContent.trim();
+  if (!postText) {
+    setError('请先读取帖子，或在当前帖子区域粘贴内容。');
+    showToast('请先提供帖子内容', 'error');
+    return;
+  }
+  state.post = state.post
+    ? { ...state.post, contextText: postText }
+    : { text: postText, contextText: postText };
   setError('');
   setLoading($('#draftButton'), true, '生成中…');
   setDraftLoading(true);
@@ -287,14 +344,15 @@ async function generateDrafts() {
     const profile = $('#profileInput').value.trim();
     const language = $('#languageSelect').value;
     const style = $('#styleSelect').value;
+    const humanTone = Number($('#humanToneRange').value);
     const result = settings.apiKey
-      ? await requestModel(settings, profile, language, style)
+      ? await requestModel(settings, profile, language, style, humanTone)
       : demoDrafts(language, style);
 
     renderResult(result, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
     showToast('回复草稿生成成功', 'success');
   } catch (error) {
-    setError(error.message);
+    setError(formatModelRequestError(error));
     showToast('回复草稿生成失败，请查看下方错误信息', 'error');
   } finally {
     setDraftLoading(false);
@@ -322,15 +380,15 @@ async function generateIdeas() {
       model: 'gpt-4o-mini',
       apiKey: ''
     });
-    const profile = $('#contentProfileInput').value.trim();
     settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    const profile = $('#contentProfileInput').value.trim();
     const result = settings.apiKey
       ? await requestContentIdea(settings, type, language, profile)
       : demoIdea(type, language);
     const hasTranslation = renderIdea(result, language, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
     showToast(hasTranslation ? '内容生成成功' : '内容生成成功，中文翻译暂未返回', hasTranslation ? 'success' : 'loading');
   } catch (error) {
-    setError(error.message);
+    setError(formatModelRequestError(error));
     showToast('内容生成失败，请查看下方错误信息', 'error');
   } finally {
     setIdeaLoading(false);
@@ -361,7 +419,7 @@ async function generateTweetOptimization() {
     renderTweetOptimization(result, language, providerLabel(settings.provider));
     showToast('推文优化成功', 'success');
   } catch (error) {
-    setError(error.message);
+    setError(formatModelRequestError(error));
     showToast('推文优化失败，请查看下方错误信息', 'error');
   } finally {
     setTweetLoading(false);
@@ -391,14 +449,9 @@ function renderTweetOptimization(result, language, mode) {
     copy.type = 'button';
     copy.textContent = `复制文案 ${index + 1}`;
     copy.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(post);
-        copy.textContent = '已复制';
-        setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, 1400);
-      } catch {
-        copy.textContent = '复制失败';
-        setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, 2200);
-      }
+      const copied = await copyText(post);
+      copy.textContent = copied ? '已复制' : '复制失败';
+      setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, copied ? 1400 : 2200);
     });
     card.append(text, copy);
     list.append(card);
@@ -414,9 +467,8 @@ function setIdeaLoading(loading) {
 function providerLabel(provider) {
   return provider === 'deepseek' ? 'DeepSeek ' : '模型 ';
 }
-async function requestModel(settings, profile, language, style) {
+async function requestModel(settings, profile, language, style, humanTone) {
   const languageName = languageNames[language] ?? languageNames.zh;
-
   const styleName = styleNames[style] ?? styleNames.insightful;
   const endpoint = requestEndpoint(settings);
   const response = await fetch(endpoint, {
@@ -425,7 +477,7 @@ async function requestModel(settings, profile, language, style) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
     body: JSON.stringify({
       model: settings.model,
       temperature: 0.7,
@@ -433,7 +485,7 @@ async function requestModel(settings, profile, language, style) {
       messages: [
         {
           role: 'system',
-          content: buildReplyPrompt(languageName, styleName)
+          content: buildReplyPrompt(languageName, styleName, humanTone)
         },
         {
           role: 'user',
@@ -441,6 +493,7 @@ async function requestModel(settings, profile, language, style) {
             accountProfile: profile || '未提供账号定位，请保持克制、具体、非营销化。',
             targetLanguage: languageName,
             preferredStyle: styleName,
+            humanTone: `${humanTone}/5（${humanToneNames[humanTone]}）`,
             post: state.post.contextText || state.post.text
           })
         }
@@ -464,7 +517,7 @@ async function requestTweetOptimization(settings, idea, feedback, language) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
     body: JSON.stringify({
       model: settings.model,
       temperature: 0.8,
@@ -517,15 +570,15 @@ function setModelStatus(message, status) {
 }
 
 async function requestContentIdea(settings, type, language, profile) {
-  const endpoint = requestEndpoint(settings);
   const languageName = languageNames[language] ?? languageNames.zh;
+  const endpoint = requestEndpoint(settings);
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
     body: JSON.stringify({
       model: settings.model,
       temperature: 0.8,
@@ -585,20 +638,26 @@ function renderIdea(result, language, mode) {
   return hasTranslation;
 }
 
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    showToast('复制成功', 'success');
+    return true;
+  } catch {
+    showToast('复制失败，请手动选择文字', 'error');
+    return false;
+  }
+}
+
 function copyIdeaButton(label, value) {
   const button = document.createElement('button');
   button.className = 'copy-button';
   button.type = 'button';
   button.textContent = label;
   button.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      button.textContent = '已复制';
-      setTimeout(() => { button.textContent = label; }, 1400);
-    } catch {
-      button.textContent = '复制失败，请手动选择文字';
-      setTimeout(() => { button.textContent = label; }, 2600);
-    }
+    const copied = await copyText(value);
+    button.textContent = copied ? '已复制' : '复制失败，请手动选择文字';
+    setTimeout(() => { button.textContent = label; }, copied ? 1400 : 2600);
   });
   return button;
 }
@@ -645,6 +704,12 @@ function demoDrafts(language, style) {
       contrarian: ['Tôi phần lớn đồng ý, nhưng cần thêm một điều kiện: cách này không nhất thiết phù hợp với mọi đội nhóm.', 'Kết quả chỉ là một phần; chi phí duy trì trong dài hạn cũng rất quan trọng.', 'Nhìn từ góc khác, vấn đề có thể nằm ở mục tiêu ban đầu chứ không phải ở công cụ.'],
       witty: ['Công cụ có thể đã sẵn sàng, nhưng phần yêu cầu vẫn đang làm thêm giờ.', 'Hãy làm rõ vấn đề trước để mô hình không phải chơi trò đoán ý.', 'Nghe giống vấn đề kỹ thuật, cho đến khi có người hỏi ai sẽ duy trì nó.'],
       sarcastic: ['Tất nhiên cứ chọn mô hình mạnh nhất trước; định nghĩa vấn đề và trách nhiệm cứ để tự giải quyết sau.', 'Nếu “đã triển khai” đồng nghĩa với “đã hiệu quả”, thì kế hoạch này hoàn hảo.', 'Có vẻ chỉ còn thiếu một nút bấm; việc kiểm chứng và người phụ trách để tương lai lo.']
+    },
+    ja: {
+      insightful: ['見落とされがちなのは、より強いモデルを選ぶ前に問題の範囲を明確にすることです。', '実際に進めるなら、誰が内容を管理し、何を信頼できる情報とするかを先に決めたいです。', '重要なのは作れるかどうかだけでなく、作った後に誰が価値を維持するかだと思います。']
+    },
+    ko: {
+      insightful: ['놓치기 쉬운 점은 더 강한 모델을 고르기 전에 문제의 범위를 먼저 명확히 해야 한다는 것입니다.', '실제로 진행하려면 누가 콘텐츠를 관리하고 어떤 정보를 신뢰할지부터 정하는 편이 좋습니다.', '핵심은 만들 수 있느냐뿐 아니라 만든 뒤 누가 가치를 유지하느냐에 있습니다.']
     }
   };
   const languageDrafts = draftsByLanguage[language] ?? draftsByLanguage.zh;
@@ -652,7 +717,9 @@ function demoDrafts(language, style) {
   const messages = {
     zh: { reason: `本地演示已基于当前帖子生成草稿。帖子开头：${opening}`, risk: '请人工检查上下文、事实和语气。', angle: `建议采用${styleNames[style] ?? styleNames.insightful}角度。` },
     en: { reason: `Local demo drafts are based on the current post. Opening: ${opening}`, risk: 'Review the context, facts, and tone before posting.', angle: `Suggested angle: ${styleNames[style] ?? styleNames.insightful}.` },
-    vi: { reason: `Bản demo cục bộ được tạo dựa trên bài viết hiện tại. Phần mở đầu: ${opening}`, risk: 'Hãy kiểm tra ngữ cảnh, thông tin và giọng điệu trước khi đăng.', angle: `Góc đề xuất: ${styleNames[style] ?? styleNames.insightful}.` }
+    vi: { reason: `Bản demo cục bộ được tạo dựa trên bài viết hiện tại. Phần mở đầu: ${opening}`, risk: 'Hãy kiểm tra ngữ cảnh, thông tin và giọng điệu trước khi đăng.', angle: `Góc đề xuất: ${styleNames[style] ?? styleNames.insightful}.` },
+    ja: { reason: `ローカルデモは現在の投稿をもとに作成しました。冒頭：${opening}`, risk: '投稿前に文脈、事実、表現を確認してください。', angle: `推奨する切り口：${styleNames[style] ?? styleNames.insightful}。` },
+    ko: { reason: `로컬 데모는 현재 게시물을 바탕으로 생성했습니다. 시작 부분: ${opening}`, risk: '게시 전 문맥, 사실, 어조를 확인하세요.', angle: `권장 관점: ${styleNames[style] ?? styleNames.insightful}.` }
   };
   const message = messages[language] ?? messages.zh;
   const translations = language === 'zh'
@@ -726,9 +793,9 @@ function renderResult(result, mode) {
     copy.className = 'copy-button';
     copy.textContent = `复制草稿 ${index + 1}`;
     copy.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(draft);
-      copy.textContent = '已复制';
-      setTimeout(() => { copy.textContent = `复制草稿 ${index + 1}`; }, 1400);
+      const copied = await copyText(draft);
+      copy.textContent = copied ? '已复制' : '复制失败';
+      setTimeout(() => { copy.textContent = `复制草稿 ${index + 1}`; }, copied ? 1400 : 2200);
     });
     card.append(copy);
     list.append(card);

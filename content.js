@@ -117,8 +117,7 @@ function addDraftTriggers() {
 
     const likeButton = article.querySelector('[data-testid="like"]');
     const actionGroup = likeButton?.closest('[role="group"]') ?? likeButton?.parentElement;
-    if (!likeButton || !actionGroup) return;
-
+    if (!likeButton || !actionGroup || !article.isConnected || !likeButton.isConnected || !actionGroup.isConnected) return;
     const trigger = document.createElement('button');
     trigger.type = 'button';
     trigger.className = 'x-reply-copilot-trigger';
@@ -134,7 +133,12 @@ function addDraftTriggers() {
       article.setAttribute('data-x-reply-target', 'true');
       chrome.runtime.sendMessage({ type: 'open-panel' });
     });
-    actionGroup.insertBefore(trigger, likeButton);
+    try {
+      if (likeButton.parentNode !== actionGroup) return;
+      actionGroup.prepend(trigger);
+    } catch (error) {
+      if (error?.name !== 'NotFoundError') throw error;
+    }
   });
 }
 

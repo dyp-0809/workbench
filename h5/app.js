@@ -13,11 +13,17 @@ for (const button of document.querySelectorAll('[data-tab]')) {
     const tab = button.dataset.tab;
     for (const item of document.querySelectorAll('[data-tab]')) item.classList.toggle('active', item === button);
     for (const panel of document.querySelectorAll('[data-tab-panel]')) panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
+    setFloatingPasteVisibility(tab);
     if (tab === 'ideas' && !ideasInitialized) {
       ideasInitialized = true;
       generateIdeas();
     }
   });
+}
+setFloatingPasteVisibility('reply');
+
+function setFloatingPasteVisibility(tab) {
+  $('#floatingPasteButton').classList.toggle('hidden', tab !== 'reply');
 }
 
 $('#settingsButton').addEventListener('click', () => {

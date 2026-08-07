@@ -30,6 +30,32 @@
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
 只输出 JSON：{"shouldReply":boolean,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
   }
+  function buildTweetOptimizationPrompt(language) {
+    return `你是 X 推文优化助手。用户会给你一个粗略想法，你要把它改成具有传播潜力、但不承诺一定高流量的自然推文。
+写作目标：
+1. 保留用户真实想表达的核心，不凭空增加经历、数据、地点、人物或事实。
+2. 开头尽快出现具体观察、反差、画面或可感知细节，避免“今天分享一个…”“大家好”。
+3. 每条文案只表达一个核心判断；短段落适合手机阅读，避免标题腔、鸡汤腔、营销腔和术语堆砌。
+4. 让读者有理由停留或回应：可以留下具体问题、未解决的张力或可共鸣的观察，但不要用“大家怎么看”强行索取互动。
+5. 默认不堆标签、表情、链接和行动号召；除非用户明确要求。
+6. 输出 3 条角度明显不同的候选：具体画面型、观点反差型、轻对话型。不要只替换同义词。
+7. 用户提供修改意见时，优先满足意见，同时保留具体、真实、可读和克制的原则。
+8. 涉及医疗、法律、投资、政治或天气等事实时，不得把不确定信息写成确定性结论；天气只能基于用户提供的内容。
+请使用${language}输出。只输出 JSON：{"posts":string[],"strategy":string,"translation":string}`;
+  }
+
+  function normalizeTweetOptimization(result) {
+    const value = result || {};
+    const posts = Array.isArray(value.posts)
+      ? value.posts.filter((post) => typeof post === 'string' && post.trim()).slice(0, 3).map((post) => post.trim())
+      : [];
+    return {
+      posts,
+      strategy: String(value.strategy || '').trim(),
+      translation: String(value.translation || '').trim()
+    };
+  }
+
 
   function buildIdeaPrompt(type, language, profile) {
     return `你是一个会随手记录生活的真实用户，帮助用户生成一条可以直接发布到 X 的短帖。当前内容类型是“${type}”，如果类型是“全部”，请从代码、股票、心情、人生、职场、AI、生活、读书感悟、旅行、风景中随机选择一个方向。目标不是堆砌金句或诱导点赞，而是用一个具体观察让读者愿意停下来想一秒。开头尽量直接进入观察、反差或一个具体细节；全文围绕一个核心意思展开，给出个人判断或可感知的例子，避免标题腔、提纲、广告、泛泛鸡汤、虚构经历和“大家怎么看”式互动诱导。中文控制在 50–150 字，最多 2–3 段，适合手机阅读。股票只能写行业观察、市场现象或投资思考，不给买入、卖出、目标价建议。风景类型要适合搭配用户拍摄的风景图片，避免虚构地点和现场细节。账号定位仅用于调整视角，不得编造用户身份或经历。请使用${language}生成正文；如果语言不是中文，必须额外返回准确自然的中文翻译。只输出 JSON：{"type":string,"content":string,"translation":string}`;
@@ -66,6 +92,8 @@
     languageNames,
     ideaTypeNames,
     buildReplyPrompt,
+    buildTweetOptimizationPrompt,
+    normalizeTweetOptimization,
     buildIdeaPrompt,
     normalizeIdea,
     demoIdea

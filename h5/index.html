@@ -26,6 +26,7 @@
 
     <nav class="tabs" aria-label="功能切换">
       <button class="tab-button active" data-tab="reply" type="button">回复建议</button>
+      <button class="tab-button" data-tab="optimize" type="button">推文优化</button>
       <button class="tab-button" data-tab="ideas" type="button">我该发什么</button>
     </nav>
     <section id="replyTab" data-tab-panel="reply">
@@ -48,6 +49,28 @@
         <div id="draftList" class="draft-list"></div>
       </section>
     </section>
+    <section id="optimizeTab" data-tab-panel="optimize" class="hidden">
+      <section class="card">
+        <h2>推文优化</h2>
+        <p class="helper-text">输入一个粗略想法，生成 3 条更具体、更有传播潜力的版本。高流量无法保证，真实和可读优先。</p>
+        <textarea id="tweetIdeaInput" rows="4" placeholder="例如：今天天气真好，蓝天白云"></textarea>
+        <textarea id="tweetFeedbackInput" rows="3" placeholder="可选：修改意见，例如“更像我说话，少一点鸡汤，加入具体画面”"></textarea>
+        <div class="control-grid">
+          <label>生成语言<select id="tweetLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option></select></label>
+        </div>
+        <div class="optimize-actions">
+          <button id="optimizeTweetButton" class="primary-button" type="button">生成优化文案</button>
+          <button id="refreshTweetButton" class="text-button" type="button">换一批</button>
+        </div>
+      </section>
+      <section id="tweetResult" class="card hidden">
+        <div class="result-heading"><h2>优化结果</h2><span id="tweetMode" class="badge">DeepSeek</span></div>
+        <div id="tweetLoading" class="reply-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在优化推文…</span></div>
+        <div id="tweetStrategy" class="analysis-card"></div>
+        <div id="tweetDraftList" class="draft-list"></div>
+      </section>
+    </section>
+
 
     <section id="ideasTab" data-tab-panel="ideas" class="hidden">
       <section class="card">

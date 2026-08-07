@@ -1,4 +1,4 @@
-const { languageNames, ideaTypeNames, buildReplyPrompt, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
@@ -36,6 +36,8 @@ $('#modelSelect').addEventListener('change', () => {
 });
 $('#draftButton').addEventListener('click', generateDrafts);
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
+$('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
+$('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 for (const button of document.querySelectorAll('[data-idea-type]')) {
   button.addEventListener('click', () => {
     currentIdeaType = button.dataset.ideaType;
@@ -188,6 +190,78 @@ async function generateIdeas() {
     setLoading(button, false, '换一个');
   }
 }
+async function generateTweetOptimization() {
+  const button = $('#optimizeTweetButton');
+  const idea = $('#tweetIdeaInput').value.trim();
+  const feedback = $('#tweetFeedbackInput').value.trim();
+  const language = $('#tweetLanguageSelect').value || 'zh';
+  if (!idea) {
+    showError('请先输入一个推文想法。');
+    showToast('请先输入一个推文想法', 'error');
+    $('#tweetIdeaInput').focus();
+    return;
+  }
+  setLoading(button, true, '生成中…');
+  setTweetLoading(true);
+  showError('');
+  showToast('正在优化推文…', 'loading');
+  try {
+    const settings = getSettings();
+    const result = normalizeTweetOptimization(await requestModel(settings, {
+      idea,
+      feedback,
+      language: languageNames[language]
+    }, buildTweetOptimizationPrompt(languageNames[language])));
+    if (!result.posts.length) throw new Error('模型没有返回可用文案。');
+    renderTweetOptimization(result, language);
+    showToast('推文优化成功', 'success');
+  } catch (error) {
+    showError(error.message);
+    showToast('推文优化失败，请查看下方错误信息', 'error');
+  } finally {
+    setTweetLoading(false);
+    setLoading(button, false, '生成优化文案');
+  }
+}
+
+function setTweetLoading(loading) {
+  $('#tweetResult').classList.remove('hidden');
+  $('#tweetStrategy').classList.toggle('hidden', loading);
+  $('#tweetDraftList').classList.toggle('hidden', loading);
+}
+
+function renderTweetOptimization(result, language) {
+  $('#tweetMode').textContent = `DeepSeek · ${languageNames[language]}`;
+  $('#tweetStrategy').replaceChildren(makeTweetLine('优化策略', result.strategy || '围绕具体观察和清晰表达优化。'));
+  const list = $('#tweetDraftList');
+  list.replaceChildren();
+  result.posts.forEach((post, index) => {
+    const card = document.createElement('article');
+    card.className = 'draft-item';
+    const text = document.createElement('p');
+    text.textContent = post;
+    const copy = document.createElement('button');
+    copy.className = 'copy-button';
+    copy.type = 'button';
+    copy.textContent = `复制文案 ${index + 1}`;
+    copy.addEventListener('click', async () => {
+      const copied = await copyText(post);
+      copy.textContent = copied ? '已复制' : '复制失败';
+      setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, copied ? 1400 : 2200);
+    });
+    card.append(text, copy);
+    list.append(card);
+  });
+}
+function makeTweetLine(label, value) {
+  const line = document.createElement('div');
+  const strong = document.createElement('strong');
+  strong.textContent = `${label}：`;
+  line.append(strong, document.createTextNode(value));
+  return line;
+}
+
+
 
 function setIdeaLoading(loading) {
   $('#ideaLoading').classList.toggle('hidden', !loading);

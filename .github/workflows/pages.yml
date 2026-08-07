@@ -46,13 +46,13 @@ jobs:
           BARK_KEY: ${{ secrets.BARK_KEY }}
           BARK_SERVER_URL: ${{ secrets.BARK_SERVER_URL || 'https://api.day.app' }}
           PAGES_URL: ${{ steps.deployment.outputs.page_url }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || '手动触发部署' }}
         run: |
           title="X Assistant 部署成功"
           body="$(cat <<EOF
           分支：${GITHUB_REF_NAME}
           提交：${GITHUB_SHA::7}
-          提交信息：${GITHUB_COMMIT_MESSAGE}
-          访问地址：${PAGES_URL}
+          提交信息：${COMMIT_MESSAGE}
           EOF
           )"
 
@@ -78,7 +78,6 @@ jobs:
           body="$(cat <<EOF
           分支：${GITHUB_REF_NAME}
           提交：${GITHUB_SHA::7}
-          请查看 Actions 日志：${ACTIONS_URL}
           EOF
           )"
 

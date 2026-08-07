@@ -8,7 +8,7 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 
-const { languageNames, ideaTypeNames, buildReplyPrompt, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
 
 const styleNames = {
   insightful: '补充观点',
@@ -38,6 +38,8 @@ document.querySelectorAll('[data-tab]').forEach((button) => {
 });
 
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
+$('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
+$('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 document.querySelectorAll('[data-idea-type]').forEach((button) => {
   button.addEventListener('click', () => {
     state.currentIdeaType = button.dataset.ideaType;
@@ -319,6 +321,74 @@ async function generateIdeas() {
     setLoading(button, false, '换一个');
   }
 }
+async function generateTweetOptimization() {
+  const button = $('#optimizeTweetButton');
+  const idea = $('#tweetIdeaInput').value.trim();
+  const feedback = $('#tweetFeedbackInput').value.trim();
+  const language = $('#tweetLanguageSelect').value || 'zh';
+  if (!idea) {
+    setError('请先输入一个推文想法。');
+    showToast('请先输入一个推文想法', 'error');
+    $('#tweetIdeaInput').focus();
+    return;
+  }
+  setError('');
+  setLoading(button, true, '生成中…');
+  setTweetLoading(true);
+  showToast('正在优化推文…', 'loading');
+  try {
+    const settings = await loadSettings();
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    if (!settings.apiKey) throw new Error('请先在设置中配置 API Key。');
+    const result = normalizeTweetOptimization(await requestTweetOptimization(settings, idea, feedback, language));
+    if (!result.posts.length) throw new Error('模型没有返回可用文案。');
+    renderTweetOptimization(result, language, providerLabel(settings.provider));
+    showToast('推文优化成功', 'success');
+  } catch (error) {
+    setError(error.message);
+    showToast('推文优化失败，请查看下方错误信息', 'error');
+  } finally {
+    setTweetLoading(false);
+    setLoading(button, false, '生成优化文案');
+  }
+}
+
+function setTweetLoading(loading) {
+  $('#tweetResult').classList.remove('hidden');
+  $('#tweetLoading').classList.toggle('hidden', !loading);
+  $('#tweetStrategy').classList.toggle('hidden', loading);
+  $('#tweetDraftList').classList.toggle('hidden', loading);
+}
+
+function renderTweetOptimization(result, language, mode) {
+  $('#tweetMode').textContent = `${mode}生成 · ${languageNames[language]}`;
+  $('#tweetStrategy').replaceChildren(makeLine('优化策略', result.strategy || '围绕具体观察和清晰表达优化。'));
+  const list = $('#tweetDraftList');
+  list.replaceChildren();
+  result.posts.forEach((post, index) => {
+    const card = document.createElement('article');
+    card.className = 'draft-card';
+    const text = document.createElement('p');
+    text.textContent = post;
+    const copy = document.createElement('button');
+    copy.className = 'copy-button';
+    copy.type = 'button';
+    copy.textContent = `复制文案 ${index + 1}`;
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(post);
+        copy.textContent = '已复制';
+        setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, 1400);
+      } catch {
+        copy.textContent = '复制失败';
+        setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, 2200);
+      }
+    });
+    card.append(text, copy);
+    list.append(card);
+  });
+}
+
 
 function setIdeaLoading(loading) {
   $('#ideaLoading').classList.toggle('hidden', !loading);
@@ -330,6 +400,7 @@ function providerLabel(provider) {
 }
 async function requestModel(settings, profile, language, style) {
   const languageName = languageNames[language] ?? languageNames.zh;
+
   const styleName = styleNames[style] ?? styleNames.insightful;
   const endpoint = requestEndpoint(settings);
   const response = await fetch(endpoint, {
@@ -369,6 +440,43 @@ async function requestModel(settings, profile, language, style) {
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error('模型没有返回可用内容。');
   return normalizeResult(JSON.parse(content));
+}
+async function requestTweetOptimization(settings, idea, feedback, language) {
+  const response = await fetch(requestEndpoint(settings), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.apiKey}`
+    },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      model: settings.model,
+      temperature: 0.8,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: buildTweetOptimizationPrompt(languageNames[language] ?? languageNames.zh)
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            idea,
+            feedback: feedback || '没有额外修改意见，请先按默认规则优化。',
+            language: languageNames[language] ?? languageNames.zh
+          })
+        }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型请求失败（${response.status}）：${detail.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error('模型没有返回可用内容。');
+  return JSON.parse(content);
 }
 
 function requestEndpoint(settings) {

@@ -1,10 +1,9 @@
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
 
 let currentIdeaType = 'all';
-let ideasInitialized = false;
 
 $('#ideaLanguageSelect').value = 'zh';
 initializeChoiceTags();
@@ -64,16 +63,13 @@ for (const button of document.querySelectorAll('[data-tab]')) {
     for (const item of document.querySelectorAll('[data-tab]')) item.classList.toggle('active', item === button);
     for (const panel of document.querySelectorAll('[data-tab-panel]')) panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
     setFloatingQuickReplyVisibility(tab);
-    if (tab === 'ideas' && !ideasInitialized) {
-      ideasInitialized = true;
-      generateIdeas();
-    }
   });
 }
-setFloatingQuickReplyVisibility('reply');
+setFloatingQuickReplyVisibility('ideas');
 
 function setFloatingQuickReplyVisibility(tab) {
   $('#floatingQuickReplyButton').classList.toggle('hidden', tab !== 'reply');
+  $('#floatingSourcePasteButton').classList.toggle('hidden', tab !== 'ideas');
 }
 
 $('#settingsButton').addEventListener('click', () => {
@@ -92,13 +88,17 @@ $('#modelSelect').addEventListener('change', () => {
 });
 $('#draftButton').addEventListener('click', generateDrafts);
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
+$('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
+$('#sourceMaterialInput').addEventListener('input', clearContributionSuggestions);
+$('#contentProfileInput').addEventListener('input', clearContributionSuggestions);
+$('#contentLengthLimit').addEventListener('change', normalizeContentLengthInput);
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 for (const button of document.querySelectorAll('[data-idea-type]')) {
   button.addEventListener('click', () => {
     currentIdeaType = button.dataset.ideaType;
     for (const item of document.querySelectorAll('[data-idea-type]')) item.classList.toggle('active', item === button);
-    generateIdeas();
+    clearContributionSuggestions();
   });
 }
 $('#clearPostButton').addEventListener('click', () => {
@@ -107,19 +107,25 @@ $('#clearPostButton').addEventListener('click', () => {
 });
 $('#pastePostButton').addEventListener('click', pastePost);
 $('#floatingQuickReplyButton').addEventListener('click', quickReply);
+$('#floatingSourcePasteButton').addEventListener('click', pasteSourceMaterial);
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
+
+async function readClipboardText() {
+  if (!window.isSecureContext || !navigator.clipboard?.readText) {
+    throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用系统“粘贴”。');
+  }
+  const text = await navigator.clipboard.readText();
+  if (!text.trim()) throw new Error('粘贴板中没有可用内容。');
+  return text;
+}
 
 async function replacePostFromClipboard() {
   const input = $('#postInput');
   input.value = '';
   showError('');
-  if (!window.isSecureContext || !navigator.clipboard?.readText) {
-    throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用 iPhone 系统“粘贴”。');
-  }
-  const text = await navigator.clipboard.readText();
+  const text = await readClipboardText();
   input.value = text;
-  if (!text.trim()) throw new Error('粘贴板中没有可用的帖子内容。');
   setChoiceValue('languageSelect', detectReplyLanguage(text));
   return text;
 }
@@ -129,6 +135,24 @@ async function pastePost() {
     await replacePostFromClipboard();
   } catch (error) {
     showError(error.message || '读取粘贴板失败，请在输入框中使用 iPhone 系统“粘贴”。');
+  }
+}
+
+async function pasteSourceMaterial() {
+  const button = $('#floatingSourcePasteButton');
+  setLoading(button, true, '读取中…');
+  showError('');
+  try {
+    const text = await readClipboardText();
+    $('#sourceMaterialInput').value = text;
+    clearContributionSuggestions();
+    $('#sourceMaterialInput').focus();
+    showToast('粘贴板内容已填入参考素材', 'success');
+  } catch (error) {
+    showError(error.message || '读取粘贴板失败，请在输入框中使用系统“粘贴”。');
+    showToast('粘贴参考素材失败', 'error');
+  } finally {
+    setLoading(button, false, '粘贴素材');
   }
 }
 
@@ -243,30 +267,119 @@ function showToast(message, state) {
   }
 }
 
+function normalizeContentLengthInput() {
+  $('#contentLengthLimit').value = String(normalizeContentLengthLimit($('#contentLengthLimit').value));
+}
+
+function clearContributionSuggestions() {
+  const container = $('#contributionSuggestions');
+  container.replaceChildren();
+  container.classList.add('hidden');
+}
+
+async function generateContributionSuggestions() {
+  const button = $('#generateContributionSuggestionsButton');
+  const source = $('#sourceMaterialInput').value.trim();
+  if (!source) {
+    showError('请先填写参考素材或话题。');
+    showToast('缺少参考素材或话题', 'error');
+    $('#sourceMaterialInput').focus();
+    return;
+  }
+
+  const input = {
+    type: ideaTypeNames[currentIdeaType],
+    source,
+    profile: $('#contentProfileInput').value.trim()
+  };
+  setLoading(button, true, '生成中…');
+  clearContributionSuggestions();
+  showError('');
+  showToast('正在生成三份新增价值…', 'loading');
+  try {
+    const suggestions = normalizeContributionSuggestions(await requestModel(
+      getSettings(),
+      input,
+      buildContributionSuggestionsPrompt(input)
+    ));
+    if (suggestions.length !== 3) throw new Error('模型没有返回完整的三份新增价值。');
+    renderContributionSuggestions(suggestions);
+    showToast('已生成三份新增价值，请选择或修改', 'success');
+  } catch (error) {
+    showError(error.message);
+    showToast('新增价值生成失败，请查看错误信息', 'error');
+  } finally {
+    setLoading(button, false, '生成三份新增价值');
+  }
+}
+
+function renderContributionSuggestions(suggestions) {
+  const container = $('#contributionSuggestions');
+  container.replaceChildren();
+  suggestions.forEach((suggestion, index) => {
+    const card = document.createElement('article');
+    card.className = 'contribution-suggestion';
+    const heading = document.createElement('strong');
+    heading.textContent = `${index + 1}. ${suggestion.angle}`;
+    const contribution = document.createElement('p');
+    contribution.textContent = suggestion.contribution;
+    card.append(heading, contribution);
+    if (suggestion.needsUserInput) card.append(line('建议补充', suggestion.needsUserInput));
+    const select = document.createElement('button');
+    select.className = 'secondary-button';
+    select.type = 'button';
+    select.textContent = '选择这一份';
+    select.addEventListener('click', () => {
+      $('#originalContributionInput').value = suggestion.contribution;
+      $('#originalContributionInput').focus();
+      showToast('已填入，可继续按真实情况修改', 'success');
+    });
+    card.append(select);
+    container.append(card);
+  });
+  container.classList.remove('hidden');
+}
+
 async function generateIdeas() {
   const button = $('#ideasRefreshButton');
-  const language = $('#ideaLanguageSelect').value || 'zh';
-  const type = ideaTypeNames[currentIdeaType];
+  const contribution = $('#originalContributionInput').value.trim();
+  if (!contribution) {
+    showError('请先写下你的新增价值：判断、经验、分析、反例或新的背景。');
+    showToast('缺少你的原创输入', 'error');
+    $('#originalContributionInput').focus();
+    return;
+  }
+
+  const input = {
+    type: ideaTypeNames[currentIdeaType],
+    format: $('#contentFormatSelect').value,
+    language: $('#ideaLanguageSelect').value || 'zh',
+    source: $('#sourceMaterialInput').value.trim(),
+    contribution,
+    profile: $('#contentProfileInput').value.trim(),
+    contentLengthLimit: normalizeContentLengthLimit($('#contentLengthLimit').value)
+  };
+  $('#ideasResult').classList.remove('hidden');
   setLoading(button, true, '生成中…');
   setIdeaLoading(true);
   showError('');
-  showToast('正在想一条…', 'loading');
+  showToast('正在组织原创内容…', 'loading');
   try {
     const settings = getSettings();
-    const profile = $('#contentProfileInput').value.trim() || '未提供账号定位，请保持自然、具体，不做营销化表达。';
-    const result = await requestModel(settings, {
-      type,
-      language: languageNames[language],
-      profile
-    }, buildIdeaPrompt(type, languageNames[language], profile));
-    const hasTranslation = renderIdeas(result, language);
-    showToast(hasTranslation ? '内容生成成功' : '内容生成成功，中文翻译暂未返回', hasTranslation ? 'success' : 'loading');
+    const languageName = languageNames[input.language] ?? languageNames.zh;
+    const result = normalizeOriginalContent(await requestModel(
+      settings,
+      { ...input, language: languageName },
+      buildOriginalContentPrompt({ ...input, language: languageName })
+    ), input);
+    const hasTranslation = renderIdeas(result, input.language);
+    showToast(hasTranslation ? '原创内容生成成功' : '内容已生成，中文翻译暂未返回', hasTranslation ? 'success' : 'loading');
   } catch (error) {
     showError(error.message);
-    showToast('内容生成失败，请查看下方错误信息', 'error');
+    showToast('原创内容生成失败，请查看下方错误信息', 'error');
   } finally {
     setIdeaLoading(false);
-    setLoading(button, false, '换一个');
+    setLoading(button, false, '生成原创内容');
   }
 }
 async function generateTweetOptimization() {
@@ -374,10 +487,18 @@ async function requestModel(settings, input, system) {
 }
 
 function renderReply(result) {
-  const normalized = { shouldReply: Boolean(result.shouldReply), reason: String(result.reason || '未提供判断理由。'), risk: String(result.risk || '请人工复核语境。'), angle: String(result.angle || '未提供建议角度。'), drafts: Array.isArray(result.drafts) ? result.drafts.filter(Boolean).slice(0, 3) : [], translations: Array.isArray(result.translations) ? result.translations : [] };
+  const normalized = normalizeReplyResult(result);
   $('#replyResult').classList.remove('hidden');
-  $('#analysisCard').replaceChildren(line('建议', normalized.shouldReply ? '可以考虑回复' : '不建议回复'), line('理由', normalized.reason), line('角度', normalized.angle), line('风险提示', normalized.risk), line('生成', '以上建议仅供参考，不影响下方评论草稿正常生成。'));
-  const list = $('#draftList'); list.replaceChildren();
+  $('#analysisCard').replaceChildren(
+    line('最合适的动作', replyActionNames[normalized.recommendedAction]),
+    line('动作依据', normalized.actionReason),
+    line('是否直接回复', normalized.shouldReply ? '可以考虑回复' : '不建议直接回复'),
+    line('理由', normalized.reason),
+    line('角度', normalized.angle),
+    line('风险提示', normalized.risk)
+  );
+  const list = $('#draftList');
+  list.replaceChildren();
   normalized.drafts.forEach((draft, index) => {
     const card = document.createElement('article');
     card.className = 'draft-item reply-draft';
@@ -387,23 +508,30 @@ function renderReply(result) {
     label.textContent = `评论 ${index + 1}`;
     card.append(label, document.createTextNode(draft));
     if (normalized.translations[index]) card.append(line('中文译文', normalized.translations[index]));
-    card.append(copyButton(`复制草稿 ${index + 1}`, draft)); list.append(card);
+    card.append(copyButton(`复制草稿 ${index + 1}`, draft));
+    list.append(card);
   });
   if (!normalized.drafts.length) list.append(line('结果', '没有生成可用草稿，建议人工处理。'));
 }
 
-function renderIdeas(result, language) {
-  const normalized = normalizeIdea(result, ideaTypeNames[currentIdeaType]);
+function renderIdeas(normalized, language) {
   if (!normalized.content) throw new Error('模型没有返回可用内容。');
   const card = $('#ideaCard');
   card.replaceChildren();
   const type = document.createElement('div');
   type.className = 'idea-card-type';
-  type.textContent = normalized.type;
+  type.textContent = `${normalized.type} · ${contentFormatNames[normalized.format]}`;
   const contentElement = document.createElement('div');
   contentElement.className = 'idea-content';
   contentElement.textContent = normalized.content;
-  card.append(type, contentElement);
+  card.append(
+    type,
+    line('原创程度', originalityLevelNames[normalized.originalityLevel]),
+    line('判断依据', normalized.originalityReason || '未提供判断依据。'),
+    line('字数', `${normalized.contentLength}/${normalized.contentLengthLimit} 字${normalized.wasTruncated ? '（已按上限截断）' : ''}`)
+  );
+  if (normalized.missingValue) card.append(line('建议补充', normalized.missingValue));
+  card.append(contentElement);
   let hasTranslation = language === 'zh';
   if (language !== 'zh') {
     hasTranslation = Boolean(normalized.translation);
@@ -412,11 +540,11 @@ function renderIdeas(result, language) {
     } else {
       const warning = document.createElement('div');
       warning.className = 'translation-warning';
-      warning.textContent = '中文翻译暂未返回，可点击“换一个”重试。';
+      warning.textContent = '中文翻译暂未返回，可再次生成。';
       card.append(warning);
     }
   }
-  card.append(copyButton('复制原文', normalized.content));
+  card.append(copyButton('复制原创草稿', normalized.content));
   card.classList.remove('hidden');
   return hasTranslation;
 }

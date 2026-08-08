@@ -25,11 +25,11 @@
     </section>
 
     <nav class="tabs" aria-label="功能切换">
-      <button class="tab-button active" data-tab="reply" type="button">回复建议</button>
+      <button class="tab-button active" data-tab="ideas" type="button">原创创作</button>
       <button class="tab-button" data-tab="optimize" type="button">推文优化</button>
-      <button class="tab-button" data-tab="ideas" type="button">我该发什么</button>
+      <button class="tab-button" data-tab="reply" type="button">回复建议</button>
     </nav>
-    <section id="replyTab" data-tab-panel="reply">
+    <section id="replyTab" data-tab-panel="reply" class="hidden">
       <section class="card">
         <h2>回复建议</h2>
         <p class="helper-text">粘贴 X 帖子正文，选择语言和风格，生成 3 条评论草稿。</p>
@@ -111,11 +111,11 @@
     </section>
 
 
-    <section id="ideasTab" data-tab-panel="ideas" class="hidden">
+    <section id="ideasTab" data-tab-panel="ideas">
       <section class="card">
-        <h2>今天发什么</h2>
-        <p class="helper-text">随机给你一个像人说出来的念头。觉得不合适，就换一个。</p>
-        <div id="ideaTypeFilters" class="idea-type-filters" aria-label="内容类型">
+        <h2>原创创作</h2>
+        <p class="helper-text">先写清你的判断、经验或观察，再由模型整理成原创草稿。仅复述素材不会形成原创价值。</p>
+        <div id="ideaTypeFilters" class="idea-type-filters" aria-label="内容主题">
           <button class="idea-type-button active" type="button" data-idea-type="all">全部</button>
           <button class="idea-type-button" type="button" data-idea-type="code">代码</button>
           <button class="idea-type-button" type="button" data-idea-type="stock">股票</button>
@@ -129,19 +129,29 @@
           <button class="idea-type-button" type="button" data-idea-type="scenery">风景</button>
         </div>
         <div class="control-grid">
-          <label>生成语言<select id="ideaLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option></select></label>
+          <label>内容形态<select id="contentFormatSelect"><option value="post">原创短帖</option><option value="thread">Thread</option><option value="article">Article</option></select></label>
+          <label>生成语言<select id="ideaLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
+          <label>字数上限<input id="contentLengthLimit" type="number" min="20" max="2000" step="1" value="100" inputmode="numeric"></label>
         </div>
-        <textarea id="contentProfileInput" rows="2" placeholder="可选：你的账号定位，例如分享企业知识库和 AI 落地经验。"></textarea>
-        <button id="ideasRefreshButton" class="primary-button" type="button">换一个</button>
+        <label>参考素材或话题<textarea id="sourceMaterialInput" rows="3" placeholder="可选：粘贴原帖、事件背景或你想回应的话题。"></textarea></label>
+        <div class="contribution-suggestion-actions">
+          <button id="generateContributionSuggestionsButton" class="secondary-button" type="button">生成三份新增价值</button>
+          <span>先选一份，再按你的真实情况修改或补充。</span>
+        </div>
+        <div id="contributionSuggestions" class="contribution-suggestions hidden" aria-live="polite"></div>
+        <label>你的新增价值<textarea id="originalContributionInput" rows="3" placeholder="必填：写下你的判断、真实经验、专业分析、反例或新的背景。"></textarea></label>
+        <label>账号定位<textarea id="contentProfileInput" rows="2" placeholder="可选：例如分享企业知识库和 AI 落地经验。"></textarea></label>
+        <button id="ideasRefreshButton" class="primary-button" type="button">生成原创内容</button>
       </section>
-      <section id="ideasResult" class="card">
-        <div class="result-heading"><h2>随机碎碎念</h2><span id="ideasMode" class="badge">DeepSeek</span></div>
-        <div id="ideaLoading" class="reply-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在想一条…</span></div>
+      <section id="ideasResult" class="card hidden">
+        <div class="result-heading"><h2>原创评估</h2><span id="ideasMode" class="badge">DeepSeek</span></div>
+        <div id="ideaLoading" class="reply-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在组织原创内容…</span></div>
         <div id="ideaCard" class="idea-card hidden"></div>
       </section>
     </section>
 
   <button id="floatingQuickReplyButton" class="floating-quick-reply-button" type="button" aria-label="快速回复" title="快速回复">快速回复</button>
+  <button id="floatingSourcePasteButton" class="floating-quick-reply-button" type="button" aria-label="粘贴参考素材" title="粘贴参考素材">粘贴素材</button>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <p id="errorMessage" class="error hidden"></p>
   </main>

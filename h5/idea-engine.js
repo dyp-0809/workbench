@@ -26,6 +26,26 @@
     travel: '旅行',
     scenery: '风景'
   });
+  const contentFormatNames = Object.freeze({ post: '原创短帖', thread: 'Thread', article: 'Article' });
+  const replyActionNames = Object.freeze({ reply: '直接回复', original: '原创短帖', thread: '扩展长帖', skip: '暂不发布' });
+  const originalityLevelNames = Object.freeze({ weak: '原创增量较弱', adequate: '原创增量足够', strong: '原创增量明显' });
+  const DEFAULT_CONTENT_LENGTH_LIMIT = 100;
+  const MIN_CONTENT_LENGTH_LIMIT = 20;
+  const MAX_CONTENT_LENGTH_LIMIT = 2000;
+  function normalizeContentLengthLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULT_CONTENT_LENGTH_LIMIT;
+    return Math.min(MAX_CONTENT_LENGTH_LIMIT, Math.max(MIN_CONTENT_LENGTH_LIMIT, Math.floor(parsed)));
+  }
+
+  function constrainOriginalContent(content, limit) {
+    const characters = [...String(content || '').trim()];
+    if (characters.length <= limit) {
+      return { content: characters.join(''), contentLength: characters.length, wasTruncated: false };
+    }
+    const constrained = `${characters.slice(0, limit - 1).join('').trimEnd()}…`;
+    return { content: constrained, contentLength: [...constrained].length, wasTruncated: true };
+  }
 
   function detectReplyLanguage(text) {
     const japaneseCount = (text.match(/[\u3040-\u30ff\uff66-\uff9d]/gu) ?? []).length;
@@ -47,6 +67,29 @@
     const englishCount = latinWords.reduce((total, word) => total + word.length, 0);
     return chineseCount > englishCount ? 'zh' : 'en';
   }
+  function normalizeReplyResult(result) {
+    const value = result || {};
+    const drafts = Array.isArray(value.drafts)
+      ? value.drafts.filter((draft) => typeof draft === 'string' && draft.trim()).slice(0, 3)
+      : [];
+    const translations = Array.isArray(value.translations)
+      ? value.translations.filter((translation) => typeof translation === 'string' && translation.trim()).slice(0, drafts.length)
+      : [];
+    const fallbackAction = value.shouldReply ? 'reply' : 'skip';
+    const recommendedAction = replyActionNames[value.recommendedAction] ? value.recommendedAction : fallbackAction;
+
+    return {
+      shouldReply: Boolean(value.shouldReply),
+      recommendedAction,
+      actionReason: String(value.actionReason || value.reason || '请根据内容价值和风险人工判断。'),
+      reason: String(value.reason || '未提供判断理由。'),
+      risk: String(value.risk || '请人工复核语境。'),
+      angle: String(value.angle || '未提供建议角度。'),
+      drafts,
+      translations
+    };
+  }
+
 
   function buildReplyPrompt(language, style, humanTone = 3) {
     const normalizedHumanTone = humanToneNames[humanTone] ? humanTone : 3;
@@ -66,8 +109,9 @@
 风险边界：不对医疗、法律、投资、政治事件给出确定性判断；没有足够上下文时建议不回复。
 人味程度为 ${normalizedHumanTone}/5（${humanToneNames[normalizedHumanTone]}）：${humanToneDescriptions[normalizedHumanTone]}
 所有等级都要避免公文腔、客服腔、总结腔和 AI 套话，尤其避免“确实”“值得关注”“从某种意义上”“这提醒我们”等模板开场；不要为了显得有人味而虚构经历、身份、情绪或事实。
+先判断最合适的内容动作：reply 表示直接回复；original 表示观点可以脱离原帖写成原创短帖；thread 表示值得展开成长帖；skip 表示没有足够新增价值或风险过高。回复曝光不等于原创内容价值，不要默认选择 reply。
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
-只输出 JSON：{"shouldReply":boolean,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
+只输出 JSON：{"shouldReply":boolean,"recommendedAction":"reply|original|thread|skip","actionReason":string,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
   }
   function buildTweetOptimizationPrompt(language) {
     return `你是 X 推文优化助手。用户会给你一个粗略想法，你要把它改成具有传播潜力、但不承诺一定高流量的自然推文。
@@ -95,36 +139,112 @@
     };
   }
 
-
-  function buildIdeaPrompt(type, language, profile) {
-    return `你是一个会随手记录生活的真实用户，帮助用户生成一条可以直接发布到 X 的短帖。当前内容类型是“${type}”，如果类型是“全部”，请从代码、股票、心情、人生、职场、AI、生活、读书感悟、旅行、风景中随机选择一个方向。目标不是堆砌金句或诱导点赞，而是用一个具体观察让读者愿意停下来想一秒。开头尽量直接进入观察、反差或一个具体细节；全文围绕一个核心意思展开，给出个人判断或可感知的例子，避免标题腔、提纲、广告、泛泛鸡汤、虚构经历和“大家怎么看”式互动诱导。中文控制在 50–150 字，最多 2–3 段，适合手机阅读。股票只能写行业观察、市场现象或投资思考，不给买入、卖出、目标价建议。风景类型要适合搭配用户拍摄的风景图片，避免虚构地点和现场细节。账号定位仅用于调整视角，不得编造用户身份或经历。请使用${language}生成正文；如果语言不是中文，必须额外返回准确自然的中文翻译。只输出 JSON：{"type":string,"content":string,"translation":string}`;
+  function buildContributionSuggestionsPrompt(options = {}) {
+    const type = options.type || ideaTypeNames.all;
+    const profile = options.profile || '未提供账号定位';
+    return `你是 X 原创内容切入点助手。用户会提供参考素材或话题，你要给出恰好 3 个可编辑的“新增价值”候选，供用户选择或继续修改。
+当前主题为“${type}”，账号定位为“${profile}”。
+要求：
+1. 三份候选必须明显不同：独立判断、适用边界或反例、实践启示或待验证问题。
+2. contribution 要能直接放入“你的新增价值”输入框，具体、简洁，不得只是复述或总结素材。
+3. 不得虚构用户经历、身份、数据、来源或现场细节；需要个人事实时写入 needsUserInput，提示用户补充。
+4. 不替用户宣称未经确认的立场，不承诺流量、收益或 X 官方原创资格。
+5. 不要求点赞、回复、收藏、关注或转发。
+只输出 JSON：{"suggestions":[{"angle":string,"contribution":string,"needsUserInput":string}]}`;
   }
 
-  function normalizeIdea(result, fallbackType) {
+  function normalizeContributionSuggestions(result) {
+    const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+    return suggestions
+      .map((suggestion) => ({
+        angle: String(suggestion?.angle || '新增角度').trim(),
+        contribution: String(suggestion?.contribution || '').trim(),
+        needsUserInput: String(suggestion?.needsUserInput || '').trim()
+      }))
+      .filter((suggestion) => suggestion.contribution)
+      .slice(0, 3);
+  }
+
+  function demoContributionSuggestions() {
+    return normalizeContributionSuggestions({
+      suggestions: [
+        {
+          angle: '独立判断',
+          contribution: '我更关注的不是素材给出的结论，而是这个结论成立所依赖的条件。',
+          needsUserInput: '请结合素材指出一个你认为最关键的成立条件。'
+        },
+        {
+          angle: '边界反例',
+          contribution: '这个观点可能忽略了不同规模、阶段或资源约束下的反例。',
+          needsUserInput: '请补充一个你确实了解的场景或反例。'
+        },
+        {
+          angle: '实践启示',
+          contribution: '如果要把这个观点变成可执行建议，还需要说明由谁负责、如何验证以及失败边界。',
+          needsUserInput: '请按你的实际情况补充责任人或验证方式。'
+        }
+      ]
+    });
+  }
+
+
+  function buildOriginalContentPrompt(options = {}) {
+    const type = options.type || ideaTypeNames.all;
+    const format = contentFormatNames[options.format] ? options.format : 'post';
+    const language = options.language || languageNames.zh;
+    const profile = options.profile || '未提供账号定位';
+    const contentLengthLimit = normalizeContentLengthLimit(options.contentLengthLimit);
+    return `你是 X 原创内容助手，帮助用户把自己的判断、经验、观察或专业知识写成原创内容草稿，不自动发布。
+当前主题为“${type}”，内容形态为“${contentFormatNames[format]}”，账号定位为“${profile}”。
+原创规则：
+1. 内容的主要价值必须来自用户新增的观点、分析、经验、背景或创意表达。
+2. 可以参考已有帖子或事件，但不得只做摘要、同义改写、换序表达或增加空泛评价。
+3. 不得虚构用户经历、身份、数据、来源、地点或现场细节；用户信息不足时，在 missingValue 中明确还缺什么。
+4. originalityLevel 只能是 weak、adequate 或 strong；根据用户新增价值判断，不代表 X 官方资格或收益保证。
+5. post 写成一条可独立成立的短帖；thread 写成 3–6 段有递进关系的长帖；article 写成标题、核心判断和结构化提纲。
+6. 开头直接进入具体观察、反差或判断，避免标题腔、客服腔、AI 套话、泛泛鸡汤和营销腔。
+7. 不要要求点赞、回复、收藏、关注或转发，不承诺流量或收益。
+8. 涉及股票、医疗、法律、政治或其他高风险事实时，保持不确定性并提醒人工核验。
+9. content 必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；这是最高优先级，必要时减少段落或提纲数量。
+请使用${language}生成；非中文内容必须额外返回自然准确的中文翻译。
+只输出 JSON：{"type":string,"format":"post|thread|article","originalityLevel":"weak|adequate|strong","originalityReason":string,"missingValue":string,"content":string,"translation":string}`;
+  }
+
+  function normalizeOriginalContent(result, fallback = {}) {
     const value = result || {};
+    const format = contentFormatNames[value.format] ? value.format : (contentFormatNames[fallback.format] ? fallback.format : 'post');
+    const originalityLevel = originalityLevelNames[value.originalityLevel]
+      ? value.originalityLevel
+      : 'weak';
+    const contentLengthLimit = normalizeContentLengthLimit(fallback.contentLengthLimit);
+    const constrainedContent = constrainOriginalContent(value.content, contentLengthLimit);
     return {
-      type: String(value.type || fallbackType || ideaTypeNames.all),
-      content: String(value.content || '').trim(),
-      translation: String((value.translation ?? value.chineseTranslation ?? (Array.isArray(value.translations) ? value.translations[0] : '')) || '').trim()
+      type: String(value.type || fallback.type || ideaTypeNames.all),
+      format,
+      originalityLevel,
+      originalityReason: String(value.originalityReason || '尚未提供原创价值判断。').trim(),
+      missingValue: String(value.missingValue || '').trim(),
+      content: constrainedContent.content,
+      translation: String((value.translation ?? value.chineseTranslation ?? '') || '').trim(),
+      contentLengthLimit,
+      contentLength: constrainedContent.contentLength,
+      wasTruncated: constrainedContent.wasTruncated
     };
   }
 
-  function demoIdea(type, language) {
-    const demos = {
-      zh: {
-        content: `${type}这个主题，真正让我记住的不是结论，而是它让我重新看了一遍自己习以为常的判断。`,
-        translation: ''
-      },
-      en: {
-        content: `The most interesting part of ${type} is not the conclusion, but the way it makes me question an assumption I take for granted.`,
-        translation: `${type}最有意思的地方，不是结论，而是它让我重新审视一个习以为常的假设。`
-      },
-      vi: {
-        content: `Điều thú vị nhất về ${type} không phải là kết luận, mà là cách nó khiến tôi xem lại một giả định quen thuộc.`,
-        translation: `关于${type}最有意思的地方，不是结论，而是它让我重新审视一个习以为常的假设。`
-      }
-    };
-    return normalizeIdea({ type, ...(demos[language] || demos.zh) }, type);
+  function demoOriginalContent(input) {
+    const type = input.type || ideaTypeNames.all;
+    const format = contentFormatNames[input.format] ? input.format : 'post';
+    const contribution = String(input.contribution || '').trim();
+    return normalizeOriginalContent({
+      type,
+      format,
+      originalityLevel: contribution ? 'adequate' : 'weak',
+      originalityReason: contribution ? '已经包含用户自己的判断，可继续补充具体事实或案例。' : '尚未提供用户自己的判断。',
+      missingValue: contribution ? '建议补充一个可核验的事实、真实案例或适用边界。' : '请补充你的判断、经验、观察或专业分析。',
+      content: contribution ? `关于${type}，我更关注的是：${contribution}` : '',
+      translation: ''
+    }, { type, format, contentLengthLimit: input.contentLengthLimit });
   }
 
   root.XReplyCopilotIdeaEngine = Object.freeze({
@@ -133,11 +253,19 @@
     humanToneDescriptions,
     detectReplyLanguage,
     ideaTypeNames,
+    contentFormatNames,
+    replyActionNames,
+    originalityLevelNames,
+    normalizeContentLengthLimit,
     buildReplyPrompt,
+    normalizeReplyResult,
     buildTweetOptimizationPrompt,
     normalizeTweetOptimization,
-    buildIdeaPrompt,
-    normalizeIdea,
-    demoIdea
+    buildContributionSuggestionsPrompt,
+    normalizeContributionSuggestions,
+    demoContributionSuggestions,
+    buildOriginalContentPrompt,
+    normalizeOriginalContent,
+    demoOriginalContent
   });
 })(globalThis);

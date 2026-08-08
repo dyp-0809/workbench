@@ -2,7 +2,6 @@ const state = {
   post: null,
   profile: '',
   currentIdeaType: 'all',
-  ideasInitialized: false,
   settings: null
 };
 
@@ -58,7 +57,7 @@ function initializeHumanToneControl() {
 
 
 
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, buildReplyPrompt, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildIdeaPrompt, normalizeIdea, demoIdea } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
 
 const styleNames = {
@@ -90,21 +89,23 @@ document.querySelectorAll('[data-tab]').forEach((button) => {
     document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
       panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
     });
-    if (tab === 'ideas' && !state.ideasInitialized) {
-      state.ideasInitialized = true;
-      generateIdeas();
-    }
   });
 });
 
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
+$('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
+$('#sourceMaterialInput').addEventListener('input', clearContributionSuggestions);
+$('#contentProfileInput').addEventListener('input', clearContributionSuggestions);
+$('#extractSourceButton').addEventListener('click', extractSourceMaterial);
+$('#clearSourceButton').addEventListener('click', clearSourceMaterial);
+$('#contentLengthLimit').addEventListener('change', normalizeContentLengthInput);
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 document.querySelectorAll('[data-idea-type]').forEach((button) => {
   button.addEventListener('click', () => {
     state.currentIdeaType = button.dataset.ideaType;
     document.querySelectorAll('[data-idea-type]').forEach((item) => item.classList.toggle('active', item === button));
-    generateIdeas();
+    clearContributionSuggestions();
   });
 });
 $('#scanTrendingButton').addEventListener('click', scanTrendingPosts);
@@ -319,14 +320,25 @@ function renderTrending(posts, pageUrl) {
     card.append(
       makeLine(`热门 ${index + 1}`, post.text.split('\n').filter(Boolean)[0].slice(0, 120)),
       makeLine('互动', metrics),
-      makeLine('趋势', growth)
+      makeLine('趋势', growth),
+      makeLine('原创切入', '把它当作参考素材，补充你自己的判断、案例或反例，不要复述原帖。')
     );
+    const create = document.createElement('button');
+    create.className = 'secondary-button';
+    create.type = 'button';
+    create.textContent = '带入原创创作';
+    create.addEventListener('click', () => {
+      $('#sourceMaterialInput').value = post.text;
+      document.querySelector('[data-tab="ideas"]').click();
+      $('#originalContributionInput').focus();
+      showToast('已带入参考素材，请补充你的新增价值', 'success');
+    });
     const open = document.createElement('a');
     open.href = post.url;
     open.target = '_blank';
     open.rel = 'noreferrer';
     open.textContent = '打开帖子';
-    card.append(open);
+    card.append(create, open);
     list.append(card);
   });
 }
@@ -381,14 +393,133 @@ function setDraftLoading(loading) {
   $('#draftLoading').classList.toggle('hidden', !loading);
 }
 
+function normalizeContentLengthInput() {
+  $('#contentLengthLimit').value = String(normalizeContentLengthLimit($('#contentLengthLimit').value));
+}
+
+function clearSourceMaterial() {
+  $('#sourceMaterialInput').value = '';
+  clearContributionSuggestions();
+  setError('');
+  $('#sourceMaterialInput').focus();
+  showToast('参考素材已清空', 'success');
+}
+
+async function extractSourceMaterial() {
+  const button = $('#extractSourceButton');
+  setError('');
+  setLoading(button, true, '读取中…');
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'extract-current-post' });
+    if (!result?.ok) throw new Error(result?.error || '读取帖子失败。');
+    $('#sourceMaterialInput').value = result.post.contextText || result.post.text;
+    clearContributionSuggestions();
+    showToast('当前帖子已填入参考素材', 'success');
+  } catch (error) {
+    setError(error.message);
+    showToast('读取当前帖子失败', 'error');
+  } finally {
+    setLoading(button, false, '读取');
+  }
+}
+
+function clearContributionSuggestions() {
+  const container = $('#contributionSuggestions');
+  container.replaceChildren();
+  container.classList.add('hidden');
+}
+
+async function generateContributionSuggestions() {
+  const button = $('#generateContributionSuggestionsButton');
+  const source = $('#sourceMaterialInput').value.trim();
+  if (!source) {
+    setError('请先填写参考素材或话题。');
+    showToast('缺少参考素材或话题', 'error');
+    $('#sourceMaterialInput').focus();
+    return;
+  }
+
+  const input = {
+    type: ideaTypeNames[state.currentIdeaType],
+    source,
+    profile: $('#contentProfileInput').value.trim()
+  };
+  setError('');
+  clearContributionSuggestions();
+  setLoading(button, true, '生成中…');
+  showToast('正在生成三份新增价值…', 'loading');
+  try {
+    const settings = await chrome.storage.local.get({
+      provider: 'openai-compatible',
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      model: 'gpt-4o-mini',
+      apiKey: ''
+    });
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    const suggestions = settings.apiKey
+      ? await requestContributionSuggestions(settings, input)
+      : demoContributionSuggestions(input);
+    if (suggestions.length !== 3) throw new Error('模型没有返回完整的三份新增价值。');
+    renderContributionSuggestions(suggestions);
+    showToast('已生成三份新增价值，请选择或修改', 'success');
+  } catch (error) {
+    setError(formatModelRequestError(error));
+    showToast('新增价值生成失败，请查看错误信息', 'error');
+  } finally {
+    setLoading(button, false, '生成三份新增价值');
+  }
+}
+
+function renderContributionSuggestions(suggestions) {
+  const container = $('#contributionSuggestions');
+  container.replaceChildren();
+  suggestions.forEach((suggestion, index) => {
+    const card = document.createElement('article');
+    card.className = 'contribution-suggestion';
+    const heading = document.createElement('strong');
+    heading.textContent = `${index + 1}. ${suggestion.angle}`;
+    const contribution = document.createElement('p');
+    contribution.textContent = suggestion.contribution;
+    card.append(heading, contribution);
+    if (suggestion.needsUserInput) card.append(makeLine('建议补充', suggestion.needsUserInput));
+    const select = document.createElement('button');
+    select.className = 'secondary-button';
+    select.type = 'button';
+    select.textContent = '选择这一份';
+    select.addEventListener('click', () => {
+      $('#originalContributionInput').value = suggestion.contribution;
+      $('#originalContributionInput').focus();
+      showToast('已填入，可继续按真实情况修改', 'success');
+    });
+    card.append(select);
+    container.append(card);
+  });
+  container.classList.remove('hidden');
+}
 async function generateIdeas() {
   const button = $('#ideasRefreshButton');
-  const language = $('#ideaLanguageSelect').value || 'zh';
-  const type = ideaTypeNames[state.currentIdeaType];
+  const contribution = $('#originalContributionInput').value.trim();
+  if (!contribution) {
+    setError('请先写下你的新增价值：判断、经验、分析、反例或新的背景。');
+    showToast('缺少你的原创输入', 'error');
+    $('#originalContributionInput').focus();
+    return;
+  }
+
+  const input = {
+    type: ideaTypeNames[state.currentIdeaType],
+    format: $('#contentFormatSelect').value,
+    language: $('#ideaLanguageSelect').value || 'zh',
+    source: $('#sourceMaterialInput').value.trim(),
+    contribution,
+    profile: $('#contentProfileInput').value.trim(),
+    contentLengthLimit: normalizeContentLengthLimit($('#contentLengthLimit').value)
+  };
   setError('');
+  $('#ideasResultSection').classList.remove('hidden');
   setLoading(button, true, '生成中…');
   setIdeaLoading(true);
-  showToast('正在想一条…', 'loading');
+  showToast('正在组织原创内容…', 'loading');
 
   try {
     const settings = await chrome.storage.local.get({
@@ -398,18 +529,17 @@ async function generateIdeas() {
       apiKey: ''
     });
     settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
-    const profile = $('#contentProfileInput').value.trim();
     const result = settings.apiKey
-      ? await requestContentIdea(settings, type, language, profile)
-      : demoIdea(type, language);
-    const hasTranslation = renderIdea(result, language, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
-    showToast(hasTranslation ? '内容生成成功' : '内容生成成功，中文翻译暂未返回', hasTranslation ? 'success' : 'loading');
+      ? await requestOriginalContent(settings, input)
+      : demoOriginalContent(input);
+    const hasTranslation = renderOriginalContent(result, input.language, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
+    showToast(hasTranslation ? '原创内容生成成功' : '内容已生成，中文翻译暂未返回', hasTranslation ? 'success' : 'loading');
   } catch (error) {
     setError(formatModelRequestError(error));
-    showToast('内容生成失败，请查看下方错误信息', 'error');
+    showToast('原创内容生成失败，请查看下方错误信息', 'error');
   } finally {
     setIdeaLoading(false);
-    setLoading(button, false, '换一个');
+    setLoading(button, false, '生成原创内容');
   }
 }
 async function generateTweetOptimization() {
@@ -525,7 +655,7 @@ async function requestModel(settings, profile, language, style, humanTone) {
   const payload = await response.json();
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error('模型没有返回可用内容。');
-  return normalizeResult(JSON.parse(content));
+  return normalizeReplyResult(JSON.parse(content));
 }
 async function requestTweetOptimization(settings, idea, feedback, language) {
   const response = await fetch(requestEndpoint(settings), {
@@ -586,8 +716,36 @@ function setModelStatus(message, status) {
   element.dataset.state = status;
 }
 
-async function requestContentIdea(settings, type, language, profile) {
-  const languageName = languageNames[language] ?? languageNames.zh;
+async function requestContributionSuggestions(settings, input) {
+  const response = await fetch(requestEndpoint(settings), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.apiKey}`
+    },
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: settings.model,
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: buildContributionSuggestionsPrompt(input) },
+        { role: 'user', content: JSON.stringify(input) }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型请求失败（${response.status}）：${detail.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error('模型没有返回可用内容。');
+  return normalizeContributionSuggestions(JSON.parse(content));
+}
+
+async function requestOriginalContent(settings, input) {
+  const languageName = languageNames[input.language] ?? languageNames.zh;
   const endpoint = requestEndpoint(settings);
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -598,18 +756,11 @@ async function requestContentIdea(settings, type, language, profile) {
     signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
     body: JSON.stringify({
       model: settings.model,
-      temperature: 0.8,
+      temperature: 0.7,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: buildIdeaPrompt(type, languageName, profile) },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            type,
-            language: languageName,
-            profile: profile || '未提供账号定位，请保持自然、具体，不做营销化表达。'
-          })
-        }
+        { role: 'system', content: buildOriginalContentPrompt({ ...input, language: languageName }) },
+        { role: 'user', content: JSON.stringify({ ...input, language: languageName }) }
       ]
     })
   });
@@ -621,22 +772,28 @@ async function requestContentIdea(settings, type, language, profile) {
   const payload = await response.json();
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error('模型没有返回可用内容。');
-  return normalizeIdea(JSON.parse(content), type);
+  return normalizeOriginalContent(JSON.parse(content), input);
 }
 
-
-function renderIdea(result, language, mode) {
+function renderOriginalContent(result, language, mode) {
   if (!result.content) throw new Error('模型没有返回可用内容。');
   $('#ideasModeBadge').textContent = mode;
   const card = $('#ideaCard');
   card.replaceChildren();
   const type = document.createElement('div');
   type.className = 'idea-card-type';
-  type.textContent = result.type;
+  type.textContent = `${result.type} · ${contentFormatNames[result.format]}`;
   const content = document.createElement('p');
   content.className = 'random-idea-content';
   content.textContent = result.content;
-  card.append(type, content);
+  card.append(
+    type,
+    makeLine('原创程度', originalityLevelNames[result.originalityLevel]),
+    makeLine('判断依据', result.originalityReason || '未提供判断依据。'),
+    makeLine('字数', `${result.contentLength}/${result.contentLengthLimit} 字${result.wasTruncated ? '（已按上限截断）' : ''}`)
+  );
+  if (result.missingValue) card.append(makeLine('建议补充', result.missingValue));
+  card.append(content);
 
   let hasTranslation = language === 'zh';
   if (language !== 'zh') {
@@ -646,11 +803,11 @@ function renderIdea(result, language, mode) {
     } else {
       const warning = document.createElement('div');
       warning.className = 'translation-warning';
-      warning.textContent = '中文翻译暂未返回，可点击“换一个”重试。';
+      warning.textContent = '中文翻译暂未返回，可再次生成。';
       card.append(warning);
     }
   }
-  card.append(copyIdeaButton('复制原文', result.content));
+  card.append(copyIdeaButton('复制原创草稿', result.content));
   card.classList.remove('hidden');
   return hasTranslation;
 }
@@ -743,7 +900,7 @@ function demoDrafts(language, style) {
     ? []
     : (draftsByLanguage.zh[style] ?? draftsByLanguage.zh.insightful);
 
-  return normalizeResult({
+  return normalizeReplyResult({
     shouldReply: true,
     reason: message.reason,
     risk: message.risk,
@@ -752,30 +909,14 @@ function demoDrafts(language, style) {
     translations
   });
 }
-function normalizeResult(result) {
-  const drafts = Array.isArray(result.drafts)
-    ? result.drafts.filter((draft) => typeof draft === 'string' && draft.trim()).slice(0, 3)
-    : [];
-  const translations = Array.isArray(result.translations)
-    ? result.translations.filter((translation) => typeof translation === 'string' && translation.trim()).slice(0, drafts.length)
-    : [];
-
-  return {
-    shouldReply: Boolean(result.shouldReply),
-    reason: String(result.reason || '未提供判断理由。'),
-    risk: String(result.risk || '请人工复核语境。'),
-    angle: String(result.angle || '未提供建议角度。'),
-    drafts,
-    translations
-  };
-}
-
 function renderResult(result, mode) {
   $('#resultSection').classList.remove('hidden');
   $('#modeBadge').textContent = mode;
   $('#analysisCard').dataset.recommendation = result.shouldReply ? 'yes' : 'no';
   $('#analysisCard').replaceChildren(
-    makeLine('建议', result.shouldReply ? '可以考虑回复' : '不建议回复'),
+    makeLine('最合适的动作', replyActionNames[result.recommendedAction]),
+    makeLine('动作依据', result.actionReason),
+    makeLine('是否直接回复', result.shouldReply ? '可以考虑回复' : '不建议直接回复'),
     makeLine('理由', result.reason),
     makeLine('角度', result.angle),
     makeLine('风险提示', result.risk)

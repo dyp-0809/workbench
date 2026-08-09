@@ -193,6 +193,7 @@
             </div>
           </div>
           <textarea id="sourceMaterialInput" rows="3" placeholder="可选：粘贴原帖、事件背景或你想回应的话题。"></textarea>
+        <p id="sourceMaterialState" class="helper-text hidden" role="status"></p>
         </div>
         <div class="contribution-suggestion-actions">
           <button id="generateContributionSuggestionsButton" class="secondary-button" type="button">生成三份新增价值</button>
@@ -200,7 +201,21 @@
         </div>
         <div id="contributionSuggestions" class="contribution-suggestions hidden" aria-live="polite"></div>
         <label class="idea-language-label">你的新增价值<textarea id="originalContributionInput" rows="3" placeholder="必填：写下你的判断、真实经验、专业分析、反例或新的背景。"></textarea></label>
-        <label class="idea-language-label">账号定位<textarea id="contentProfileInput" rows="2" placeholder="可选：例如分享企业知识库和 AI 落地经验。"></textarea></label>
+        <div class="idea-language-label">
+          <div class="source-field-heading">
+            <label for="contentProfileInput">账号定位</label>
+            <button id="fillDefaultProfileButton" class="secondary-button" type="button">填充默认值</button>
+          </div>
+          <textarea id="contentProfileInput" rows="2" placeholder="可选：例如分享企业知识库和 AI 落地经验。"></textarea>
+        </div>
+        <button id="generateProfileRecommendationsButton" class="secondary-button" type="button">按账号定位推荐推文</button>
+        <section id="recommendationResultSection" class="section hidden">
+          <div class="section-heading"><h2>推荐草稿</h2><span id="recommendationModeBadge" class="badge">账号定位</span></div>
+          <div id="recommendationLoading" class="idea-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在生成推荐草稿…</span></div>
+          <p id="recommendationRationale" class="helper-text"></p>
+          <div id="recommendationList" class="draft-list"></div>
+          <button id="refreshRecommendationsButton" class="secondary-button hidden" type="button">换一批</button>
+        </section>
         <button id="ideasRefreshButton" class="primary-button" type="button">生成原创内容</button>
       </section>
       <section id="ideasResultSection" class="section hidden">

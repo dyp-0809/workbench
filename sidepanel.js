@@ -2,7 +2,8 @@ const state = {
   post: null,
   profile: '',
   currentIdeaType: 'all',
-  settings: null
+  settings: null,
+  recommendationInput: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -57,7 +58,7 @@ function initializeHumanToneControl() {
 
 
 
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
 
 const styleNames = {
@@ -72,6 +73,7 @@ const styleNames = {
   sarcastic: '讽刺'
 };
 const MODEL_REQUEST_TIMEOUT_MS = 60000;
+const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投资者；关注 AI、软件工程、创作和长期投资，只写真实观察与可验证判断';
 
 function formatModelRequestError(error) {
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || /aborted|timeout|timed out/i.test(error?.message || '')) {
@@ -94,11 +96,17 @@ document.querySelectorAll('[data-tab]').forEach((button) => {
 
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
 $('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
-$('#sourceMaterialInput').addEventListener('input', clearContributionSuggestions);
-$('#contentProfileInput').addEventListener('input', clearContributionSuggestions);
+$('#sourceMaterialInput').addEventListener('input', handleSourceMaterialInput);
+$('#contentProfileInput').addEventListener('input', async () => {
+  await chrome.storage.local.set({ contentProfile: $('#contentProfileInput').value.trim() });
+  clearContributionSuggestions();
+});
 $('#extractSourceButton').addEventListener('click', extractSourceMaterial);
 $('#clearSourceButton').addEventListener('click', clearSourceMaterial);
 $('#contentLengthLimit').addEventListener('change', normalizeContentLengthInput);
+$('#fillDefaultProfileButton').addEventListener('click', fillDefaultProfile);
+$('#generateProfileRecommendationsButton').addEventListener('click', () => generateRecommendations('profile'));
+$('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 document.querySelectorAll('[data-idea-type]').forEach((button) => {
@@ -112,6 +120,9 @@ $('#scanTrendingButton').addEventListener('click', scanTrendingPosts);
 
 $('#settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
 initializeModelControls();
+chrome.storage.local.get({ contentProfile: '' }).then(({ contentProfile }) => {
+  $('#contentProfileInput').value = contentProfile;
+});
 
 async function initializeModelControls() {
   state.settings = await loadSettings();
@@ -276,7 +287,7 @@ async function scanTrendingPosts() {
         metrics: post.metrics
       }]))
     });
-    renderTrending(posts, result.pageUrl);
+    renderTrending(posts, result.pageUrl, capturedAt);
   } catch (error) {
     setError(error.message);
   } finally {
@@ -305,7 +316,7 @@ function enrichTrendingPost(post, previous, capturedAt) {
   };
 }
 
-function renderTrending(posts, pageUrl) {
+function renderTrending(posts, pageUrl, capturedAt) {
   $('#trendingResultSection').classList.remove('hidden');
   $('#trendingModeBadge').textContent = `${posts.length} 条 · ${new URL(pageUrl).hostname}`;
   const list = $('#trendingList');
@@ -328,17 +339,30 @@ function renderTrending(posts, pageUrl) {
     create.type = 'button';
     create.textContent = '带入原创创作';
     create.addEventListener('click', () => {
-      $('#sourceMaterialInput').value = post.text;
+      setSourceMaterial(
+        formatTrendingSource(post, capturedAt),
+        `已带入热门帖子${post.author ? `：${post.author}` : ''}，请补充你的新增价值`
+      );
       document.querySelector('[data-tab="ideas"]').click();
       $('#originalContributionInput').focus();
-      showToast('已带入参考素材，请补充你的新增价值', 'success');
+      showToast('已带入热门参考素材，请补充你的新增价值', 'success');
+    });
+    const recommend = document.createElement('button');
+    recommend.className = 'secondary-button';
+    recommend.type = 'button';
+    recommend.textContent = '基于此推荐';
+    recommend.addEventListener('click', () => {
+      const source = formatTrendingSource(post, capturedAt);
+      setSourceMaterial(source, `已带入热门帖子${post.author ? `：${post.author}` : ''}，将据此生成推荐草稿`);
+      document.querySelector('[data-tab="ideas"]').click();
+      generateRecommendations('trending', source);
     });
     const open = document.createElement('a');
     open.href = post.url;
     open.target = '_blank';
     open.rel = 'noreferrer';
     open.textContent = '打开帖子';
-    card.append(create, open);
+    card.append(create, recommend, open);
     list.append(card);
   });
 }
@@ -393,13 +417,38 @@ function setDraftLoading(loading) {
   $('#draftLoading').classList.toggle('hidden', !loading);
 }
 
+function fillDefaultProfile() {
+  $('#contentProfileInput').value = DEFAULT_CONTENT_PROFILE;
+  chrome.storage.local.set({ contentProfile: DEFAULT_CONTENT_PROFILE });
+  clearContributionSuggestions();
+  showToast('已填充默认账号定位，可继续修改', 'success');
+}
+
 function normalizeContentLengthInput() {
   $('#contentLengthLimit').value = String(normalizeContentLengthLimit($('#contentLengthLimit').value));
+}
+
+function handleSourceMaterialInput() {
+  clearContributionSuggestions();
+  setSourceMaterialState('');
+}
+
+function setSourceMaterial(value, stateMessage) {
+  $('#sourceMaterialInput').value = value;
+  clearContributionSuggestions();
+  setSourceMaterialState(stateMessage);
+}
+
+function setSourceMaterialState(message) {
+  const state = $('#sourceMaterialState');
+  state.textContent = message;
+  state.classList.toggle('hidden', !message);
 }
 
 function clearSourceMaterial() {
   $('#sourceMaterialInput').value = '';
   clearContributionSuggestions();
+  setSourceMaterialState('');
   setError('');
   $('#sourceMaterialInput').focus();
   showToast('参考素材已清空', 'success');
@@ -412,8 +461,10 @@ async function extractSourceMaterial() {
   try {
     const result = await chrome.runtime.sendMessage({ type: 'extract-current-post' });
     if (!result?.ok) throw new Error(result?.error || '读取帖子失败。');
-    $('#sourceMaterialInput').value = result.post.contextText || result.post.text;
-    clearContributionSuggestions();
+    setSourceMaterial(
+      result.post.contextText || result.post.text,
+      `已带入当前帖子${result.post.author ? `：${result.post.author}` : ''}`
+    );
     showToast('当前帖子已填入参考素材', 'success');
   } catch (error) {
     setError(error.message);
@@ -421,6 +472,20 @@ async function extractSourceMaterial() {
   } finally {
     setLoading(button, false, '读取');
   }
+}
+
+function formatTrendingSource(post, capturedAt) {
+  const metrics = `回复 ${formatNumber(post.metrics.replies)} · 转发 ${formatNumber(post.metrics.reposts)} · 喜欢 ${formatNumber(post.metrics.likes)} · 浏览 ${formatNumber(post.metrics.views)}`;
+  return [
+    '热门参考帖子',
+    `原帖作者：${post.author || '未识别'}`,
+    `原帖链接：${post.url}`,
+    `读取时间：${capturedAt}`,
+    `互动快照：${metrics}`,
+    '',
+    '原帖正文：',
+    post.text
+  ].join('\n');
 }
 
 function clearContributionSuggestions() {
@@ -541,6 +606,67 @@ async function generateIdeas() {
     setIdeaLoading(false);
     setLoading(button, false, '生成原创内容');
   }
+}
+
+async function generateRecommendations(sourceMode, source = '') {
+  const profile = $('#contentProfileInput').value.trim();
+  if (!profile) {
+    setError('请先填写账号定位，推荐才会贴近你的长期主题。');
+    $('#contentProfileInput').focus();
+    return;
+  }
+  const input = sourceMode ? {
+    sourceMode,
+    source,
+    profile,
+    language: $('#ideaLanguageSelect').value || 'zh',
+    contentLengthLimit: normalizeContentLengthLimit($('#contentLengthLimit').value)
+  } : state.recommendationInput;
+  if (!input) return;
+  const button = sourceMode ? $('#generateProfileRecommendationsButton') : $('#refreshRecommendationsButton');
+  $('#recommendationResultSection').classList.remove('hidden');
+  $('#recommendationLoading').classList.remove('hidden');
+  setLoading(button, true, sourceMode ? '生成中…' : '换一批中…');
+  try {
+    const settings = await loadSettings();
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    const result = settings.apiKey
+      ? await requestTweetRecommendations(settings, input)
+      : demoTweetRecommendations(input);
+    if (result.recommendations.length !== 3) throw new Error('模型没有返回完整的三条推荐草稿。');
+    state.recommendationInput = input;
+    renderRecommendations(result, input);
+  } catch (error) {
+    setError(formatModelRequestError(error));
+  } finally {
+    $('#recommendationLoading').classList.add('hidden');
+    setLoading(button, false, sourceMode ? '按账号定位推荐推文' : '换一批');
+  }
+}
+
+function renderRecommendations(result, input) {
+  $('#recommendationModeBadge').textContent = input.sourceMode === 'trending' ? '热点参考' : '账号定位';
+  $('#recommendationRationale').textContent = result.rationale || '推荐草稿仅供参考，可直接复制或继续二次创作。';
+  const list = $('#recommendationList');
+  list.replaceChildren();
+  result.recommendations.forEach((recommendation, index) => {
+    const card = document.createElement('article');
+    card.className = 'draft-card';
+    const text = document.createElement('p');
+    text.textContent = recommendation;
+    const secondary = document.createElement('button');
+    secondary.className = 'secondary-button';
+    secondary.type = 'button';
+    secondary.textContent = '二次创作';
+    secondary.addEventListener('click', () => {
+      setSourceMaterial(`推荐草稿（仅作参考）：\n${recommendation}`, '已带入推荐草稿，请补充你的新增价值');
+      $('#originalContributionInput').value = '';
+      $('#originalContributionInput').focus();
+    });
+    card.append(text, copyIdeaButton(`复制草稿 ${index + 1}`, recommendation), secondary);
+    list.append(card);
+  });
+  $('#refreshRecommendationsButton').classList.remove('hidden');
 }
 async function generateTweetOptimization() {
   const button = $('#optimizeTweetButton');
@@ -714,6 +840,31 @@ function setModelStatus(message, status) {
   const element = $('#modelStatus');
   element.textContent = message;
   element.dataset.state = status;
+}
+
+async function requestTweetRecommendations(settings, input) {
+  const response = await fetch(requestEndpoint(settings), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: settings.model,
+      temperature: 0.8,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: buildTweetRecommendationsPrompt({ ...input, language: languageNames[input.language] ?? languageNames.zh }) },
+        { role: 'user', content: JSON.stringify(input) }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型请求失败（${response.status}）：${detail.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error('模型没有返回可用内容。');
+  return normalizeTweetRecommendations(JSON.parse(content), input);
 }
 
 async function requestContributionSuggestions(settings, input) {

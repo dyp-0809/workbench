@@ -46,6 +46,9 @@
     const constrained = `${characters.slice(0, limit - 1).join('').trimEnd()}…`;
     return { content: constrained, contentLength: [...constrained].length, wasTruncated: true };
   }
+  function removeTerminalPunctuation(content) {
+    return String(content || '').trim().replace(/[。！？.!?；;：:,，…]+$/gu, '').trimEnd();
+  }
 
   function detectReplyLanguage(text) {
     const japaneseCount = (text.match(/[\u3040-\u30ff\uff66-\uff9d]/gu) ?? []).length;
@@ -70,7 +73,11 @@
   function normalizeReplyResult(result) {
     const value = result || {};
     const drafts = Array.isArray(value.drafts)
-      ? value.drafts.filter((draft) => typeof draft === 'string' && draft.trim()).slice(0, 3)
+      ? value.drafts
+        .filter((draft) => typeof draft === 'string' && draft.trim())
+        .map((draft) => removeTerminalPunctuation(draft))
+        .filter(Boolean)
+        .slice(0, 3)
       : [];
     const translations = Array.isArray(value.translations)
       ? value.translations.filter((translation) => typeof translation === 'string' && translation.trim()).slice(0, drafts.length)
@@ -109,6 +116,7 @@
 风险边界：不对医疗、法律、投资、政治事件给出确定性判断；没有足够上下文时建议不回复。
 人味程度为 ${normalizedHumanTone}/5（${humanToneNames[normalizedHumanTone]}）：${humanToneDescriptions[normalizedHumanTone]}
 所有等级都要避免公文腔、客服腔、总结腔和 AI 套话，尤其避免“确实”“值得关注”“从某种意义上”“这提醒我们”等模板开场；不要为了显得有人味而虚构经历、身份、情绪或事实。
+11. drafts 要像真人当下说的话：可以有自然停顿、短句或克制的口语，但不故意错字、不套金句、不写总结段；每条结尾不使用句号、问号或感叹号。
 先判断最合适的内容动作：reply 表示直接回复；original 表示观点可以脱离原帖写成原创短帖；thread 表示值得展开成长帖；skip 表示没有足够新增价值或风险过高。回复曝光不等于原创内容价值，不要默认选择 reply。
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
 只输出 JSON：{"shouldReply":boolean,"recommendedAction":"reply|original|thread|skip","actionReason":string,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
@@ -207,6 +215,7 @@
 8. 涉及股票、医疗、法律、政治或其他高风险事实时，保持不确定性并提醒人工核验。
 9. content 必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；这是最高优先级，必要时减少段落或提纲数量。
 请使用${language}生成；非中文内容必须额外返回自然准确的中文翻译。
+10. post 默认使用自然口语，不写“值得关注”等模板化开头；内容未被系统截断时，结尾不使用句号、问号或感叹号。
 只输出 JSON：{"type":string,"format":"post|thread|article","originalityLevel":"weak|adequate|strong","originalityReason":string,"missingValue":string,"content":string,"translation":string}`;
   }
 
@@ -218,16 +227,19 @@
       : 'weak';
     const contentLengthLimit = normalizeContentLengthLimit(fallback.contentLengthLimit);
     const constrainedContent = constrainOriginalContent(value.content, contentLengthLimit);
+    const content = format === 'post' && !constrainedContent.wasTruncated
+      ? removeTerminalPunctuation(constrainedContent.content)
+      : constrainedContent.content;
     return {
       type: String(value.type || fallback.type || ideaTypeNames.all),
       format,
       originalityLevel,
       originalityReason: String(value.originalityReason || '尚未提供原创价值判断。').trim(),
       missingValue: String(value.missingValue || '').trim(),
-      content: constrainedContent.content,
+      content,
       translation: String((value.translation ?? value.chineseTranslation ?? '') || '').trim(),
       contentLengthLimit,
-      contentLength: constrainedContent.contentLength,
+      contentLength: [...content].length,
       wasTruncated: constrainedContent.wasTruncated
     };
   }
@@ -245,6 +257,62 @@
       content: contribution ? `关于${type}，我更关注的是：${contribution}` : '',
       translation: ''
     }, { type, format, contentLengthLimit: input.contentLengthLimit });
+  }
+
+  function buildTweetRecommendationsPrompt(options = {}) {
+    const sourceMode = options.sourceMode === 'trending' ? 'trending' : 'profile';
+    const profile = String(options.profile || '未提供账号定位').trim();
+    const language = options.language || languageNames.zh;
+    const contentLengthLimit = normalizeContentLengthLimit(options.contentLengthLimit);
+    const sourceRule = sourceMode === 'trending'
+      ? '热点素材仅作可追溯参考；所有时效事实必须来自用户提供的素材，不得补造背景、数据或趋势。'
+      : '只生成常青观点、观察或待验证问题；不得把近期事件、行情、新闻或平台热点写成已知事实。';
+    return `你是 X 推荐推文助手。你只生成“推荐草稿”，不声称内容来自用户本人，不自动发布。
+账号定位为“${profile}”。
+推荐规则：
+1. 输出恰好 3 条推荐草稿，每条只有一个可独立成立的观点，三条切入明显不同。
+2. ${sourceRule}
+3. 使用自然口语、具体观察和克制判断；避免标题腔、客服腔、总结腔、AI 套话、金句和营销腔。
+4. 不得虚构用户经历、身份、数据、来源、地点或现场细节；不要求点赞、回复、收藏、关注或转发。
+5. 美股、医疗、法律、政治等高风险主题只写观察与待验证问题；不得生成买卖建议、收益承诺或确定性结论。
+6. 每条内容必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；未被系统截断时结尾不使用句号、问号或感叹号。
+请使用${language}输出。只输出 JSON：{"recommendations":string[],"rationale":string}`;
+  }
+
+  function normalizeTweetRecommendations(result, fallback = {}) {
+    const contentLengthLimit = normalizeContentLengthLimit(fallback.contentLengthLimit);
+    const recommendations = Array.isArray(result?.recommendations)
+      ? result.recommendations
+        .filter((recommendation) => typeof recommendation === 'string' && recommendation.trim())
+        .map((recommendation) => {
+          const constrained = constrainOriginalContent(recommendation, contentLengthLimit);
+          return constrained.wasTruncated
+            ? constrained.content
+            : removeTerminalPunctuation(constrained.content);
+        })
+        .filter(Boolean)
+        .slice(0, 3)
+      : [];
+    return {
+      recommendations,
+      rationale: String(result?.rationale || '').trim(),
+      contentLengthLimit
+    };
+  }
+
+  function demoTweetRecommendations(input = {}) {
+    const sourceMode = input.sourceMode === 'trending' ? 'trending' : 'profile';
+    const source = String(input.source || '').trim();
+    const profile = String(input.profile || '这个账号').trim();
+    const topic = source ? source.split('\n').filter(Boolean).at(-1) : profile;
+    return normalizeTweetRecommendations({
+      recommendations: [
+        `比起追逐最新工具，我更在意${topic}背后那个长期没人维护的环节`,
+        `真正值得反复验证的，不是${topic}有没有用，而是它在什么条件下会失效`,
+        `把${topic}拆成一个具体问题，往往比急着给答案更接近有价值的讨论`
+      ],
+      rationale: sourceMode === 'trending' ? '基于用户选中的热门素材生成，建议核验其中事实。' : '基于账号定位生成常青观察，不包含近期事实判断。'
+    }, input);
   }
 
   root.XReplyCopilotIdeaEngine = Object.freeze({
@@ -266,6 +334,9 @@
     demoContributionSuggestions,
     buildOriginalContentPrompt,
     normalizeOriginalContent,
-    demoOriginalContent
+    demoOriginalContent,
+    buildTweetRecommendationsPrompt,
+    normalizeTweetRecommendations,
+    demoTweetRecommendations
   });
 })(globalThis);

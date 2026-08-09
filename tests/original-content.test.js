@@ -20,6 +20,22 @@ test('原创提示词要求实质新增价值并禁止互动诱导', () => {
   assert.match(prompt, /Thread/);
   assert.match(prompt, /不超过 100 个字符/);
 });
+test('原创短帖要求自然口吻并移除结尾标点', () => {
+  const prompt = engine.buildOriginalContentPrompt({
+    type: 'AI',
+    format: 'post',
+    language: '中文',
+    contentLengthLimit: 100
+  });
+  const result = engine.normalizeOriginalContent({
+    format: 'post',
+    content: '真正的瓶颈不在模型能力，而在知识维护。'
+  }, { format: 'post', contentLengthLimit: 100 });
+
+  assert.match(prompt, /结尾不使用句号、问号或感叹号/);
+  assert.equal(result.content, '真正的瓶颈不在模型能力，而在知识维护');
+  assert.equal(result.contentLength, [...result.content].length);
+});
 
 test('新增价值候选提示词生成三种可编辑切入点且禁止虚构经历', () => {
   const prompt = engine.buildContributionSuggestionsPrompt({
@@ -113,4 +129,35 @@ test('回复结果提供受控的内容动作建议', () => {
   assert.equal(result.recommendedAction, 'thread');
   assert.equal(result.actionReason, '观点可以独立展开');
   assert.equal(engine.replyActionNames.thread, '扩展长帖');
+});
+test('回复提示词与结果遵守自然口吻和无终止标点', () => {
+  const prompt = engine.buildReplyPrompt('中文', '补充观点', 4);
+  const result = engine.normalizeReplyResult({
+    shouldReply: true,
+    drafts: ['真正的变量是知识维护，而不只是模型能力。', '这件事值得继续观察！']
+  });
+
+  assert.match(prompt, /结尾不使用句号、问号或感叹号/);
+  assert.deepEqual(result.drafts, ['真正的变量是知识维护，而不只是模型能力', '这件事值得继续观察']);
+});
+test('账号定位推荐提示词只生成常青观察且标记为推荐草稿', () => {
+  const prompt = engine.buildTweetRecommendationsPrompt({
+    sourceMode: 'profile',
+    profile: '程序员、摄影爱好者、美股投资',
+    language: '中文',
+    contentLengthLimit: 100
+  });
+
+  assert.match(prompt, /推荐草稿/);
+  assert.match(prompt, /只生成常青观点/);
+  assert.match(prompt, /不得生成买卖建议/);
+  assert.match(prompt, /不超过 100 个字符/);
+});
+test('推荐草稿按字数上限收紧并移除终止标点', () => {
+  const result = engine.normalizeTweetRecommendations({
+    recommendations: ['这是第一条推荐。', '这是第二条推荐！', '这是第三条推荐？', '多余推荐']
+  }, { contentLengthLimit: 20 });
+
+  assert.deepEqual(result.recommendations, ['这是第一条推荐', '这是第二条推荐', '这是第三条推荐']);
+  assert.equal(result.contentLengthLimit, 20);
 });

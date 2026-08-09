@@ -83,6 +83,11 @@ textarea:focus, input:focus, select:focus { border-color: #73bff0; box-shadow: 0
 .contribution-suggestion strong { color: #0f1419; }
 .contribution-suggestion p { margin: 0; }
 .contribution-suggestion button { justify-self: start; }
+.profile-field { margin-top: 10px; }
+.profile-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.source-material-field { margin-top: 10px; }
+.source-material-actions { display: flex; gap: 8px; }
+.source-material-actions .secondary-button { margin: 0; }
 .idea-card { display: grid; gap: 12px; }
 .idea-card-type { color: #536471; font-size: 13px; font-weight: 800; letter-spacing: .04em; }
 .idea-content { white-space: pre-wrap; font-size: 18px; line-height: 1.7; }

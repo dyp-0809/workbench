@@ -1,11 +1,15 @@
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
 
 let currentIdeaType = 'all';
+let lastRecommendationInput = null;
+const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投资者；关注 AI、软件工程、创作和长期投资，只写真实观察与可验证判断';
+const CONTENT_PROFILE_STORAGE_KEY = 'contentProfile';
 
 $('#ideaLanguageSelect').value = 'zh';
+$('#contentProfileInput').value = localStorage.getItem(CONTENT_PROFILE_STORAGE_KEY) || '';
 initializeChoiceTags();
 initializeHumanToneControl();
 
@@ -89,9 +93,17 @@ $('#modelSelect').addEventListener('change', () => {
 $('#draftButton').addEventListener('click', generateDrafts);
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
 $('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
-$('#sourceMaterialInput').addEventListener('input', clearContributionSuggestions);
-$('#contentProfileInput').addEventListener('input', clearContributionSuggestions);
+$('#sourceMaterialInput').addEventListener('input', handleSourceMaterialInput);
+$('#pasteSourceButton').addEventListener('click', () => pasteSourceMaterial($('#pasteSourceButton')));
+$('#clearSourceButton').addEventListener('click', clearSourceMaterial);
+$('#contentProfileInput').addEventListener('input', () => {
+  localStorage.setItem(CONTENT_PROFILE_STORAGE_KEY, $('#contentProfileInput').value.trim());
+  clearContributionSuggestions();
+});
 $('#contentLengthLimit').addEventListener('change', normalizeContentLengthInput);
+$('#fillDefaultProfileButton').addEventListener('click', fillDefaultProfile);
+$('#generateProfileRecommendationsButton').addEventListener('click', () => generateRecommendations('profile'));
+$('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 for (const button of document.querySelectorAll('[data-idea-type]')) {
@@ -105,9 +117,8 @@ $('#clearPostButton').addEventListener('click', () => {
   $('#postInput').value = '';
   $('#postInput').focus();
 });
-$('#pastePostButton').addEventListener('click', pastePost);
+$('#floatingSourcePasteButton').addEventListener('click', () => pasteSourceMaterial($('#floatingSourcePasteButton')));
 $('#floatingQuickReplyButton').addEventListener('click', quickReply);
-$('#floatingSourcePasteButton').addEventListener('click', pasteSourceMaterial);
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
 
@@ -138,14 +149,34 @@ async function pastePost() {
   }
 }
 
-async function pasteSourceMaterial() {
-  const button = $('#floatingSourcePasteButton');
+function handleSourceMaterialInput() {
+  clearContributionSuggestions();
+  setSourceMaterialState('');
+}
+
+function setSourceMaterialState(message) {
+  const state = $('#sourceMaterialState');
+  state.textContent = message;
+  state.classList.toggle('hidden', !message);
+}
+
+function clearSourceMaterial() {
+  $('#sourceMaterialInput').value = '';
+  clearContributionSuggestions();
+  setSourceMaterialState('');
+  showError('');
+  $('#sourceMaterialInput').focus();
+  showToast('参考素材已清空', 'success');
+}
+
+async function pasteSourceMaterial(button) {
   setLoading(button, true, '读取中…');
   showError('');
   try {
     const text = await readClipboardText();
     $('#sourceMaterialInput').value = text;
     clearContributionSuggestions();
+    setSourceMaterialState('已带入剪贴板素材，可生成新增价值后继续创作');
     $('#sourceMaterialInput').focus();
     showToast('粘贴板内容已填入参考素材', 'success');
   } catch (error) {
@@ -267,6 +298,13 @@ function showToast(message, state) {
   }
 }
 
+function fillDefaultProfile() {
+  $('#contentProfileInput').value = DEFAULT_CONTENT_PROFILE;
+  localStorage.setItem(CONTENT_PROFILE_STORAGE_KEY, DEFAULT_CONTENT_PROFILE);
+  clearContributionSuggestions();
+  showToast('已填充默认账号定位，可继续修改', 'success');
+}
+
 function normalizeContentLengthInput() {
   $('#contentLengthLimit').value = String(normalizeContentLengthLimit($('#contentLengthLimit').value));
 }
@@ -338,6 +376,73 @@ function renderContributionSuggestions(suggestions) {
     container.append(card);
   });
   container.classList.remove('hidden');
+}
+
+async function generateRecommendations(sourceMode, source = '') {
+  const profile = $('#contentProfileInput').value.trim();
+  if (!profile) {
+    showError('请先填写账号定位，推荐才会贴近你的长期主题。');
+    $('#contentProfileInput').focus();
+    return;
+  }
+  const input = sourceMode
+    ? {
+      sourceMode,
+      source,
+      profile,
+      language: $('#ideaLanguageSelect').value || 'zh',
+      contentLengthLimit: normalizeContentLengthLimit($('#contentLengthLimit').value)
+    }
+    : lastRecommendationInput;
+  if (!input) return;
+  const button = sourceMode ? $('#generateProfileRecommendationsButton') : $('#refreshRecommendationsButton');
+  $('#recommendationResult').classList.remove('hidden');
+  $('#recommendationLoading').classList.remove('hidden');
+  $('#recommendationList').replaceChildren();
+  $('#refreshRecommendationsButton').classList.add('hidden');
+  setLoading(button, true, sourceMode ? '生成中…' : '换一批中…');
+  try {
+    const language = languageNames[input.language] ?? languageNames.zh;
+    const result = normalizeTweetRecommendations(await requestModel(
+      getSettings(),
+      { ...input, language },
+      buildTweetRecommendationsPrompt({ ...input, language })
+    ), input);
+    if (result.recommendations.length !== 3) throw new Error('模型没有返回完整的三条推荐草稿。');
+    lastRecommendationInput = input;
+    renderRecommendations(result, input);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    $('#recommendationLoading').classList.add('hidden');
+    setLoading(button, false, sourceMode ? '按账号定位推荐推文' : '换一批');
+  }
+}
+
+function renderRecommendations(result, input) {
+  $('#recommendationMode').textContent = input.sourceMode === 'trending' ? '热点参考' : '账号定位';
+  $('#recommendationRationale').textContent = result.rationale || '推荐草稿仅供参考，可直接复制或继续二次创作。';
+  const list = $('#recommendationList');
+  list.replaceChildren();
+  result.recommendations.forEach((recommendation, index) => {
+    const card = document.createElement('article');
+    card.className = 'draft-item';
+    card.append(document.createTextNode(recommendation), copyButton(`复制草稿 ${index + 1}`, recommendation));
+    const secondary = document.createElement('button');
+    secondary.className = 'secondary-button';
+    secondary.type = 'button';
+    secondary.textContent = '二次创作';
+    secondary.addEventListener('click', () => {
+      $('#sourceMaterialInput').value = `推荐草稿（仅作参考）：\n${recommendation}`;
+      $('#originalContributionInput').value = '';
+      clearContributionSuggestions();
+      setSourceMaterialState('已带入推荐草稿，请补充你的新增价值');
+      $('#originalContributionInput').focus();
+    });
+    card.append(secondary);
+    list.append(card);
+  });
+  $('#refreshRecommendationsButton').classList.remove('hidden');
 }
 
 async function generateIdeas() {

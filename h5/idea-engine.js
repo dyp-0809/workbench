@@ -32,6 +32,11 @@
   const DEFAULT_CONTENT_LENGTH_LIMIT = 100;
   const MIN_CONTENT_LENGTH_LIMIT = 20;
   const MAX_CONTENT_LENGTH_LIMIT = 2000;
+  const DEFAULT_TWEET_LENGTH_LIMIT = 80;
+  function normalizeTweetLengthLimit(value) {
+    if (value === undefined || value === null || value === '') return DEFAULT_TWEET_LENGTH_LIMIT;
+    return normalizeContentLengthLimit(value);
+  }
   function normalizeContentLengthLimit(value) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return DEFAULT_CONTENT_LENGTH_LIMIT;
@@ -45,6 +50,16 @@
     }
     const constrained = `${characters.slice(0, limit - 1).join('').trimEnd()}…`;
     return { content: constrained, contentLength: [...constrained].length, wasTruncated: true };
+  }
+  function formatTweetParagraphs(content) {
+    const sentences = String(content || '').match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/gu) ?? [];
+    const normalizedSentences = sentences.map((sentence) => sentence.trim()).filter(Boolean);
+    if (normalizedSentences.length < 3) return normalizedSentences.join('');
+    const paragraphs = [];
+    for (let index = 0; index < normalizedSentences.length; index += 2) {
+      paragraphs.push(normalizedSentences.slice(index, index + 2).join(''));
+    }
+    return paragraphs.join('\n\n');
   }
   function removeTerminalPunctuation(content) {
     return String(content || '').trim().replace(/[。！？.!?；;：:,，…]+$/gu, '').trimEnd();
@@ -121,7 +136,8 @@
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
 只输出 JSON：{"shouldReply":boolean,"recommendedAction":"reply|original|thread|skip","actionReason":string,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
   }
-  function buildTweetOptimizationPrompt(language) {
+  function buildTweetOptimizationPrompt(language, contentLengthLimit = DEFAULT_TWEET_LENGTH_LIMIT) {
+    const limit = normalizeTweetLengthLimit(contentLengthLimit);
     return `你是 X 推文优化助手。用户会给你一个粗略想法，你要把它改成具有传播潜力、但不承诺一定高流量的自然推文。
 写作目标：
 1. 保留用户真实想表达的核心，不凭空增加经历、数据、地点、人物或事实。
@@ -132,18 +148,27 @@
 6. 输出 3 条角度明显不同的候选：具体画面型、观点反差型、轻对话型。不要只替换同义词。
 7. 用户提供修改意见时，优先满足意见，同时保留具体、真实、可读和克制的原则。
 8. 涉及医疗、法律、投资、政治或天气等事实时，不得把不确定信息写成确定性结论；天气只能基于用户提供的内容。
+9. 默认自然口语，避免公文腔、客服腔、总结腔、AI 套话和金句腔；不用错别字伪造人味，未被系统截断时结尾不使用句号、问号或感叹号。
+10. 每条候选不超过 ${limit} 个字符；超出时保留核心表达并自行收紧。
+11. 每两句话组成一个段落，段落之间空一行；不足两句时保持自然完整，不要为了凑句数补写内容。
 请使用${language}输出。只输出 JSON：{"posts":string[],"strategy":string,"translation":string}`;
   }
 
-  function normalizeTweetOptimization(result) {
+  function normalizeTweetOptimization(result, options = {}) {
     const value = result || {};
+    const contentLengthLimit = normalizeTweetLengthLimit(options.contentLengthLimit);
     const posts = Array.isArray(value.posts)
-      ? value.posts.filter((post) => typeof post === 'string' && post.trim()).slice(0, 3).map((post) => post.trim())
+      ? value.posts
+        .filter((post) => typeof post === 'string' && post.trim())
+        .map((post) => constrainOriginalContent(formatTweetParagraphs(removeTerminalPunctuation(post)), contentLengthLimit).content)
+        .filter(Boolean)
+        .slice(0, 3)
       : [];
     return {
       posts,
       strategy: String(value.strategy || '').trim(),
-      translation: String(value.translation || '').trim()
+      translation: String(value.translation || '').trim(),
+      contentLengthLimit
     };
   }
 
@@ -325,6 +350,7 @@
     replyActionNames,
     originalityLevelNames,
     normalizeContentLengthLimit,
+    normalizeTweetLengthLimit,
     buildReplyPrompt,
     normalizeReplyResult,
     buildTweetOptimizationPrompt,

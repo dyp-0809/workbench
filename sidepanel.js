@@ -58,7 +58,7 @@ function initializeHumanToneControl() {
 
 
 
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
 
 const styleNames = {
@@ -673,6 +673,8 @@ async function generateTweetOptimization() {
   const idea = $('#tweetIdeaInput').value.trim();
   const feedback = $('#tweetFeedbackInput').value.trim();
   const language = $('#tweetLanguageSelect').value || 'zh';
+  const contentLengthLimit = normalizeTweetLengthLimit($('#tweetLengthLimit').value);
+  $('#tweetLengthLimit').value = String(contentLengthLimit);
   if (!idea) {
     setError('请先输入一个推文想法。');
     showToast('请先输入一个推文想法', 'error');
@@ -687,7 +689,7 @@ async function generateTweetOptimization() {
     const settings = await loadSettings();
     settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
     if (!settings.apiKey) throw new Error('请先在设置中配置 API Key。');
-    const result = normalizeTweetOptimization(await requestTweetOptimization(settings, idea, feedback, language));
+    const result = normalizeTweetOptimization(await requestTweetOptimization(settings, idea, feedback, language, contentLengthLimit), { contentLengthLimit });
     if (!result.posts.length) throw new Error('模型没有返回可用文案。');
     renderTweetOptimization(result, language, providerLabel(settings.provider));
     showToast('推文优化成功', 'success');
@@ -726,7 +728,17 @@ function renderTweetOptimization(result, language, mode) {
       copy.textContent = copied ? '已复制' : '复制失败';
       setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, copied ? 1400 : 2200);
     });
-    card.append(text, copy);
+    const refine = document.createElement('button');
+    refine.className = 'secondary-button';
+    refine.type = 'button';
+    refine.textContent = '二次创作';
+    refine.addEventListener('click', () => {
+      $('#tweetIdeaInput').value = post;
+      $('#tweetFeedbackInput').value = '';
+      $('#tweetFeedbackInput').focus();
+      showToast('已带入推文优化，可补充修改意见后重新生成', 'success');
+    });
+    card.append(text, copy, refine);
     list.append(card);
   });
 }
@@ -783,7 +795,7 @@ async function requestModel(settings, profile, language, style, humanTone) {
   if (!content) throw new Error('模型没有返回可用内容。');
   return normalizeReplyResult(JSON.parse(content));
 }
-async function requestTweetOptimization(settings, idea, feedback, language) {
+async function requestTweetOptimization(settings, idea, feedback, language, contentLengthLimit) {
   const response = await fetch(requestEndpoint(settings), {
     method: 'POST',
     headers: {
@@ -798,14 +810,15 @@ async function requestTweetOptimization(settings, idea, feedback, language) {
       messages: [
         {
           role: 'system',
-          content: buildTweetOptimizationPrompt(languageNames[language] ?? languageNames.zh)
+          content: buildTweetOptimizationPrompt(languageNames[language] ?? languageNames.zh, contentLengthLimit)
         },
         {
           role: 'user',
           content: JSON.stringify({
             idea,
             feedback: feedback || '没有额外修改意见，请先按默认规则优化。',
-            language: languageNames[language] ?? languageNames.zh
+            language: languageNames[language] ?? languageNames.zh,
+            contentLengthLimit
           })
         }
       ]

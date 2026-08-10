@@ -1,4 +1,4 @@
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
@@ -454,7 +454,6 @@ async function generateIdeas() {
     $('#originalContributionInput').focus();
     return;
   }
-
   const input = {
     type: ideaTypeNames[currentIdeaType],
     format: $('#contentFormatSelect').value,
@@ -498,6 +497,8 @@ async function generateTweetOptimization() {
     $('#tweetIdeaInput').focus();
     return;
   }
+  const contentLengthLimit = normalizeTweetLengthLimit($('#tweetLengthLimit').value);
+  $('#tweetLengthLimit').value = String(contentLengthLimit);
   setLoading(button, true, '生成中…');
   setTweetLoading(true);
   showError('');
@@ -507,8 +508,9 @@ async function generateTweetOptimization() {
     const result = normalizeTweetOptimization(await requestModel(settings, {
       idea,
       feedback,
-      language: languageNames[language]
-    }, buildTweetOptimizationPrompt(languageNames[language])));
+      language: languageNames[language],
+      contentLengthLimit
+    }, buildTweetOptimizationPrompt(languageNames[language], contentLengthLimit)), { contentLengthLimit });
     if (!result.posts.length) throw new Error('模型没有返回可用文案。');
     renderTweetOptimization(result, language);
     showToast('推文优化成功', 'success');
@@ -546,7 +548,17 @@ function renderTweetOptimization(result, language) {
       copy.textContent = copied ? '已复制' : '复制失败';
       setTimeout(() => { copy.textContent = `复制文案 ${index + 1}`; }, copied ? 1400 : 2200);
     });
-    card.append(text, copy);
+    const refine = document.createElement('button');
+    refine.className = 'secondary-button';
+    refine.type = 'button';
+    refine.textContent = '二次创作';
+    refine.addEventListener('click', () => {
+      $('#tweetIdeaInput').value = post;
+      $('#tweetFeedbackInput').value = '';
+      $('#tweetFeedbackInput').focus();
+      showToast('已带入推文优化，可补充修改意见后重新生成', 'success');
+    });
+    card.append(text, copy, refine);
     list.append(card);
   });
 }

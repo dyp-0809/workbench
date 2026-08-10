@@ -161,3 +161,21 @@ test('推荐草稿按字数上限收紧并移除终止标点', () => {
   assert.deepEqual(result.recommendations, ['这是第一条推荐', '这是第二条推荐', '这是第三条推荐']);
   assert.equal(result.contentLengthLimit, 20);
 });
+test('推文优化默认八十字，支持用户收紧字数并保持自然口吻', () => {
+  const prompt = engine.buildTweetOptimizationPrompt('中文');
+  const result = engine.normalizeTweetOptimization({
+    posts: ['真正的瓶颈不在模型能力，而在知识维护。', '这是一个超过二十个字符的推文优化结果，需要被安全地截断并保留省略号。']
+  }, { contentLengthLimit: 20 });
+
+  assert.match(prompt, /不超过 80 个字符/);
+  assert.match(prompt, /结尾不使用句号、问号或感叹号/);
+  assert.deepEqual(result.posts, ['真正的瓶颈不在模型能力，而在知识维护', '这是一个超过二十个字符的推文优化结果，…']);
+  assert.equal(result.contentLengthLimit, 20);
+});
+test('推文优化每两句话以空行分段', () => {
+  const result = engine.normalizeTweetOptimization({
+    posts: ['第一句。第二句。第三句。第四句。']
+  });
+
+  assert.deepEqual(result.posts, ['第一句。第二句。\n\n第三句。第四句']);
+});

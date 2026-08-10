@@ -96,6 +96,7 @@
         <textarea id="tweetFeedbackInput" rows="3" placeholder="可选：修改意见，例如“更像我说话，少一点鸡汤，加入具体画面”"></textarea>
         <div class="control-grid">
           <label>生成语言<select id="tweetLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option></select></label>
+          <label>字数上限<input id="tweetLengthLimit" type="number" min="20" max="2000" step="1" value="80" inputmode="numeric"></label>
         </div>
         <div class="optimize-actions">
           <button id="optimizeTweetButton" class="primary-button" type="button">生成优化文案</button>

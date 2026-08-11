@@ -132,6 +132,10 @@
           <span class="badge">传播潜力</span>
         </div>
         <p class="helper-text">输入一个粗略想法，生成 3 条更具体、更有传播潜力的版本。高流量无法保证，真实和可读优先。</p>
+        <div class="source-field-heading">
+          <label for="tweetIdeaInput">推文想法</label>
+          <button id="clearTweetIdeaButton" class="secondary-button" type="button">清空</button>
+        </div>
         <textarea id="tweetIdeaInput" rows="4" placeholder="例如：今天天气真好，蓝天白云"></textarea>
         <textarea id="tweetFeedbackInput" rows="3" placeholder="可选：修改意见，例如“更像我说话，少一点鸡汤，加入具体画面”"></textarea>
         <div class="idea-type-filters" aria-label="快捷主题">
@@ -141,6 +145,7 @@
           <button class="idea-type-button" type="button" data-tweet-topic="ai">AI</button>
           <button class="idea-type-button" type="button" data-tweet-topic="photography">摄影技巧</button>
           <button class="idea-type-button" type="button" data-tweet-topic="stock">美股</button>
+          <button class="idea-type-button" type="button" data-tweet-topic="zhihu">知乎热议</button>
         </div>
         <label class="idea-language-label">
           生成语言

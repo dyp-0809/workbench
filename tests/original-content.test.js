@@ -179,7 +179,7 @@ test('推文优化每两句话以空行分段', () => {
 
   assert.deepEqual(result.posts, ['第一句。第二句。\n\n第三句。第四句']);
 });
-test('账号定位主题灵感围绕所选主题生成且保留美股安全边界', () => {
+test('主题推文围绕讨论激烈议题并保留美股安全边界', () => {
   const prompt = engine.buildTweetRecommendationsPrompt({
     sourceMode: 'profile',
     profile: '程序员、长期投资者',
@@ -189,6 +189,28 @@ test('账号定位主题灵感围绕所选主题生成且保留美股安全边�
   });
 
   assert.match(prompt, /当前主题为“美股”/);
-  assert.match(prompt, /只围绕所选主题生成/);
+  assert.match(prompt, /真实观点分歧/);
   assert.match(prompt, /不得生成买卖建议/);
+  assert.match(prompt, /每两句话组成一个段落/);
+});
+test('知乎主题推文选择长期高讨论度话题且不伪造实时热度', () => {
+  const prompt = engine.buildTweetRecommendationsPrompt({
+    sourceMode: 'profile',
+    profile: '技术观察者',
+    topic: 'zhihu',
+    language: '中文',
+    contentLengthLimit: 80
+  });
+
+  assert.match(prompt, /当前主题为“知乎热议”/);
+  assert.match(prompt, /长期高讨论度/);
+  assert.match(prompt, /不声称掌握实时热榜/);
+});
+test('主题推文按字数限制收紧并每两句空行分段', () => {
+  const result = engine.normalizeTweetRecommendations({
+    recommendations: ['第一句。第二句。第三句。第四句。']
+  }, { contentLengthLimit: 80 });
+
+  assert.deepEqual(result.recommendations, ['第一句。第二句。\n\n第三句。第四句']);
+  assert.equal(result.contentLengthLimit, 80);
 });

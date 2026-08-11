@@ -114,6 +114,7 @@ $('#refreshRecommendationsButton').addEventListener('click', () => generateRecom
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 $('#generateTopicTweetsButton').addEventListener('click', generateTopicTweets);
+$('#clearTweetIdeaButton').addEventListener('click', clearTweetIdea);
 document.querySelectorAll('[data-tweet-topic]').forEach((button) => {
   button.addEventListener('click', () => {
     state.currentTweetTopic = button.dataset.tweetTopic;
@@ -734,6 +735,12 @@ async function rewriteClipboardTweet() {
   } finally {
     setLoading(button, false, '一键二创');
   }
+}
+function clearTweetIdea() {
+  $('#tweetIdeaInput').value = '';
+  setError('');
+  $('#tweetIdeaInput').focus();
+  showToast('推文想法已清空', 'success');
 }
 async function generateTopicTweets() {
   const button = $('#generateTopicTweetsButton');

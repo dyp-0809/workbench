@@ -26,7 +26,8 @@
     daily: '生活',
     reading: '读书感悟',
     travel: '旅行',
-    scenery: '风景'
+    scenery: '风景',
+    zhihu: '知乎热议'
   });
   const contentFormatNames = Object.freeze({ post: '原创短帖', thread: 'Thread', article: 'Article' });
   const replyActionNames = Object.freeze({ reply: '直接回复', original: '原创短帖', thread: '扩展长帖', skip: '暂不发布' });
@@ -291,20 +292,25 @@
     const profile = String(options.profile || '未提供账号定位').trim();
     const topic = ideaTypeNames[options.topic] || ideaTypeNames.all;
     const language = options.language || languageNames.zh;
+    // TODO: 接入用户配置的 GNews API 后，将近七天可核验的社会新闻标题、摘要和原始链接作为来源传入；未提供来源时不得声称实时热度。
     const contentLengthLimit = normalizeContentLengthLimit(options.contentLengthLimit);
     const sourceRule = sourceMode === 'trending'
       ? '热点素材仅作可追溯参考；所有时效事实必须来自用户提供的素材，不得补造背景、数据或趋势。'
       : '只生成常青观点、观察或待验证问题；不得把近期事件、行情、新闻或平台热点写成已知事实。';
+    const discussionRule = options.topic === 'zhihu'
+      ? '围绕知乎长期高讨论度的话题生成：选择存在真实观点分歧、利益权衡或方法论争议的议题；不声称掌握实时热榜、具体热度或平台数据。'
+      : '围绕所选主题中长期有广泛讨论且存在真实观点分歧、方案权衡或待验证问题的议题生成；不把无意义对立、煽动或情绪宣泄伪装成讨论。';
     return `你是 X 推荐推文助手。你只生成“推荐草稿”，不声称内容来自用户本人，不自动发布。
 账号定位为“${profile}”。当前主题为“${topic}”。
 推荐规则：
 1. 输出恰好 3 条推荐草稿，每条只有一个可独立成立的观点，三条切入明显不同。
 2. ${sourceRule}
 3. 只围绕所选主题生成；当主题为“全部”时，选择最贴合账号定位的一个长期主题。
-4. 使用自然口语、具体观察和克制判断；避免标题腔、客服腔、总结腔、AI 套话、金句和营销腔。
-5. 不得虚构用户经历、身份、数据、来源、地点或现场细节；不要求点赞、回复、收藏、关注或转发。
-6. 美股、医疗、法律、政治等高风险主题只写观察与待验证问题；不得生成买卖建议、收益承诺或确定性结论。
-7. 每条内容必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；未被系统截断时结尾不使用句号、问号或感叹号。
+4. ${discussionRule}
+5. 使用自然口语、具体观察和克制判断；避免标题腔、客服腔、总结腔、AI 套话、金句和营销腔。
+6. 不得虚构用户经历、身份、数据、来源、地点或现场细节；不要求点赞、回复、收藏、关注或转发。
+7. 美股、医疗、法律、政治等高风险主题只写观察与待验证问题；不得生成买卖建议、收益承诺或确定性结论。
+8. 每条内容必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；每两句话组成一个段落，段落之间空一行；不足两句时保持自然完整。未被系统截断时结尾不使用句号、问号或感叹号。
 请使用${language}输出。只输出 JSON：{"recommendations":string[],"rationale":string}`;
   }
 
@@ -314,10 +320,11 @@
       ? result.recommendations
         .filter((recommendation) => typeof recommendation === 'string' && recommendation.trim())
         .map((recommendation) => {
-          const constrained = constrainOriginalContent(recommendation, contentLengthLimit);
-          return constrained.wasTruncated
-            ? constrained.content
-            : removeTerminalPunctuation(constrained.content);
+          const constrained = constrainOriginalContent(
+            formatTweetParagraphs(removeTerminalPunctuation(recommendation)),
+            contentLengthLimit
+          );
+          return constrained.wasTruncated ? constrained.content : removeTerminalPunctuation(constrained.content);
         })
         .filter(Boolean)
         .slice(0, 3)

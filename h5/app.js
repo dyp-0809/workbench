@@ -107,6 +107,7 @@ $('#fillDefaultProfileButton').addEventListener('click', fillDefaultProfile);
 $('#generateProfileRecommendationsButton').addEventListener('click', () => generateRecommendations('profile'));
 $('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
+$('#clearTweetIdeaButton').addEventListener('click', clearTweetIdea);
 $('#generateTopicTweetsButton').addEventListener('click', generateTopicTweets);
 for (const button of document.querySelectorAll('[data-tweet-topic]')) {
   button.addEventListener('click', () => {
@@ -556,6 +557,12 @@ async function rewriteClipboardTweet() {
   } finally {
     setLoading(button, false, '一键二创');
   }
+}
+function clearTweetIdea() {
+  $('#tweetIdeaInput').value = '';
+  showError('');
+  $('#tweetIdeaInput').focus();
+  showToast('推文想法已清空', 'success');
 }
 async function generateTopicTweets() {
   const button = $('#generateTopicTweetsButton');

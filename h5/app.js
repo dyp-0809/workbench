@@ -13,6 +13,7 @@ $('#ideaLanguageSelect').value = 'zh';
 $('#contentProfileInput').value = localStorage.getItem(CONTENT_PROFILE_STORAGE_KEY) || '';
 initializeChoiceTags();
 initializeHumanToneControl();
+initializeTweetLengthControl();
 
 function initializeChoiceTags() {
   for (const button of document.querySelectorAll('[data-choice-target]')) {
@@ -58,6 +59,31 @@ function initializeHumanToneControl() {
     range.setAttribute('aria-valuetext', label);
   };
   range.addEventListener('input', update);
+  update();
+}
+function initializeTweetLengthControl() {
+  const range = $('#tweetLengthLimit');
+  const output = $('#tweetLengthValue');
+  const labels = { 50: '短帖', 80: '标准', 140: '展开', 280: '长帖' };
+  const update = () => {
+    const value = normalizeTweetLengthLimit(range.value);
+    range.value = String(value);
+    const label = `${value} 字 · ${labels[value] || '自定义'}`;
+    output.textContent = label;
+    range.setAttribute('aria-valuetext', label);
+    document.querySelectorAll('[data-tweet-length]').forEach((button) => {
+      const active = Number(button.dataset.tweetLength) === value;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+  };
+  range.addEventListener('input', update);
+  document.querySelectorAll('[data-tweet-length]').forEach((button) => {
+    button.addEventListener('click', () => {
+      range.value = button.dataset.tweetLength;
+      update();
+    });
+  });
   update();
 }
 

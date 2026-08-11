@@ -155,10 +155,13 @@
             <option value="vi">Tiếng Việt</option>
           </select>
         </label>
-        <label class="idea-language-label">
-          字数上限
-          <input id="tweetLengthLimit" type="number" min="20" max="2000" step="1" value="80" inputmode="numeric">
-        </label>
+        <div class="tweet-length-control">
+          <div class="human-tone-heading"><label for="tweetLengthLimit">字数上限</label><output id="tweetLengthValue">80 字 · 标准</output></div>
+          <input id="tweetLengthLimit" type="range" min="20" max="280" step="10" value="80" aria-label="推文字数上限">
+          <div class="tweet-length-presets" aria-label="常用推文长度">
+            <button class="tweet-length-preset" type="button" data-tweet-length="50">短帖 50</button><button class="tweet-length-preset active" type="button" data-tweet-length="80">标准 80</button><button class="tweet-length-preset" type="button" data-tweet-length="140">展开 140</button><button class="tweet-length-preset" type="button" data-tweet-length="280">长帖 280</button>
+          </div>
+        </div>
         <div class="model-actions">
           <button id="optimizeTweetButton" class="primary-button" type="button">生成优化文案</button>
           <button id="refreshTweetButton" class="secondary-button" type="button">换一批</button>

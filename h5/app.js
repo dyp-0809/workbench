@@ -74,6 +74,7 @@ setFloatingQuickReplyVisibility('ideas');
 function setFloatingQuickReplyVisibility(tab) {
   $('#floatingQuickReplyButton').classList.toggle('hidden', tab !== 'reply');
   $('#floatingSourcePasteButton').classList.toggle('hidden', tab !== 'ideas');
+  $('#floatingTweetRewriteButton').classList.toggle('hidden', tab !== 'optimize');
 }
 
 $('#settingsButton').addEventListener('click', () => {
@@ -119,6 +120,7 @@ $('#clearPostButton').addEventListener('click', () => {
 });
 $('#floatingSourcePasteButton').addEventListener('click', () => pasteSourceMaterial($('#floatingSourcePasteButton')));
 $('#floatingQuickReplyButton').addEventListener('click', quickReply);
+$('#floatingTweetRewriteButton').addEventListener('click', rewriteClipboardTweet);
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
 
@@ -486,10 +488,10 @@ async function generateIdeas() {
     setLoading(button, false, '生成原创内容');
   }
 }
-async function generateTweetOptimization() {
+async function generateTweetOptimization(inputOverride = null) {
   const button = $('#optimizeTweetButton');
-  const idea = $('#tweetIdeaInput').value.trim();
-  const feedback = $('#tweetFeedbackInput').value.trim();
+  const idea = (inputOverride?.idea ?? $('#tweetIdeaInput').value).trim();
+  const feedback = inputOverride?.feedback ?? $('#tweetFeedbackInput').value.trim();
   const language = $('#tweetLanguageSelect').value || 'zh';
   if (!idea) {
     showError('请先输入一个推文想法。');
@@ -513,13 +515,30 @@ async function generateTweetOptimization() {
     }, buildTweetOptimizationPrompt(languageNames[language], contentLengthLimit)), { contentLengthLimit });
     if (!result.posts.length) throw new Error('模型没有返回可用文案。');
     renderTweetOptimization(result, language);
-    showToast('推文优化成功', 'success');
+    showToast('已生成 3 个版本', 'success');
   } catch (error) {
     showError(error.message);
     showToast('推文优化失败，请查看下方错误信息', 'error');
   } finally {
     setTweetLoading(false);
     setLoading(button, false, '生成优化文案');
+  }
+}
+
+async function rewriteClipboardTweet() {
+  const button = $('#floatingTweetRewriteButton');
+  setLoading(button, true, '读取中…');
+  try {
+    const text = await readClipboardText();
+    $('#tweetIdeaInput').value = text;
+    $('#tweetFeedbackInput').value = '';
+    showToast('已回显粘贴板内容，正在生成 3 个版本', 'success');
+    await generateTweetOptimization({ idea: text, feedback: '' });
+  } catch (error) {
+    showError(error.message || '读取粘贴板失败，请在输入框中使用系统“粘贴”。');
+    showToast('一键二创失败', 'error');
+  } finally {
+    setLoading(button, false, '一键二创');
   }
 }
 
@@ -551,12 +570,11 @@ function renderTweetOptimization(result, language) {
     const refine = document.createElement('button');
     refine.className = 'secondary-button';
     refine.type = 'button';
-    refine.textContent = '二次创作';
-    refine.addEventListener('click', () => {
+    refine.textContent = '生成三个版本';
+    refine.addEventListener('click', async () => {
       $('#tweetIdeaInput').value = post;
       $('#tweetFeedbackInput').value = '';
-      $('#tweetFeedbackInput').focus();
-      showToast('已带入推文优化，可补充修改意见后重新生成', 'success');
+      await generateTweetOptimization({ idea: post, feedback: '' });
     });
     card.append(text, copy, refine);
     list.append(card);

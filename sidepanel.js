@@ -91,8 +91,10 @@ document.querySelectorAll('[data-tab]').forEach((button) => {
     document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
       panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
     });
+    $('#floatingTweetRewriteButton').classList.toggle('hidden', tab !== 'optimize');
   });
 });
+$('#floatingTweetRewriteButton').classList.add('hidden');
 
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
 $('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
@@ -109,6 +111,7 @@ $('#generateProfileRecommendationsButton').addEventListener('click', () => gener
 $('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
+$('#floatingTweetRewriteButton').addEventListener('click', rewriteClipboardTweet);
 document.querySelectorAll('[data-idea-type]').forEach((button) => {
   button.addEventListener('click', () => {
     state.currentIdeaType = button.dataset.ideaType;
@@ -668,10 +671,10 @@ function renderRecommendations(result, input) {
   });
   $('#refreshRecommendationsButton').classList.remove('hidden');
 }
-async function generateTweetOptimization() {
+async function generateTweetOptimization(inputOverride = null) {
   const button = $('#optimizeTweetButton');
-  const idea = $('#tweetIdeaInput').value.trim();
-  const feedback = $('#tweetFeedbackInput').value.trim();
+  const idea = (inputOverride?.idea ?? $('#tweetIdeaInput').value).trim();
+  const feedback = inputOverride?.feedback ?? $('#tweetFeedbackInput').value.trim();
   const language = $('#tweetLanguageSelect').value || 'zh';
   const contentLengthLimit = normalizeTweetLengthLimit($('#tweetLengthLimit').value);
   $('#tweetLengthLimit').value = String(contentLengthLimit);
@@ -692,13 +695,30 @@ async function generateTweetOptimization() {
     const result = normalizeTweetOptimization(await requestTweetOptimization(settings, idea, feedback, language, contentLengthLimit), { contentLengthLimit });
     if (!result.posts.length) throw new Error('模型没有返回可用文案。');
     renderTweetOptimization(result, language, providerLabel(settings.provider));
-    showToast('推文优化成功', 'success');
+    showToast('已生成 3 个版本', 'success');
   } catch (error) {
     setError(formatModelRequestError(error));
     showToast('推文优化失败，请查看下方错误信息', 'error');
   } finally {
     setTweetLoading(false);
     setLoading(button, false, '生成优化文案');
+  }
+}
+
+async function rewriteClipboardTweet() {
+  const button = $('#floatingTweetRewriteButton');
+  setLoading(button, true, '读取中…');
+  try {
+    const text = await readClipboardText();
+    $('#tweetIdeaInput').value = text;
+    $('#tweetFeedbackInput').value = '';
+    showToast('已回显粘贴板内容，正在生成 3 个版本', 'success');
+    await generateTweetOptimization({ idea: text, feedback: '' });
+  } catch (error) {
+    setError(error.message || '读取粘贴板失败，请手动粘贴内容。');
+    showToast('一键二创失败', 'error');
+  } finally {
+    setLoading(button, false, '一键二创');
   }
 }
 
@@ -731,12 +751,11 @@ function renderTweetOptimization(result, language, mode) {
     const refine = document.createElement('button');
     refine.className = 'secondary-button';
     refine.type = 'button';
-    refine.textContent = '二次创作';
-    refine.addEventListener('click', () => {
+    refine.textContent = '生成三个版本';
+    refine.addEventListener('click', async () => {
       $('#tweetIdeaInput').value = post;
       $('#tweetFeedbackInput').value = '';
-      $('#tweetFeedbackInput').focus();
-      showToast('已带入推文优化，可补充修改意见后重新生成', 'success');
+      await generateTweetOptimization({ idea: post, feedback: '' });
     });
     card.append(text, copy, refine);
     list.append(card);
@@ -976,6 +995,12 @@ function renderOriginalContent(result, language, mode) {
   return hasTranslation;
 }
 
+async function readClipboardText() {
+  if (!navigator.clipboard?.readText) throw new Error('当前环境不支持读取粘贴板，请手动粘贴内容。');
+  const text = await navigator.clipboard.readText();
+  if (!text.trim()) throw new Error('粘贴板中没有可用内容。');
+  return text;
+}
 async function copyText(value) {
   try {
     await navigator.clipboard.writeText(value);

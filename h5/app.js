@@ -163,6 +163,9 @@ function handleSourceMaterialInput() {
   clearContributionSuggestions();
   setSourceMaterialState('');
 }
+function openOriginalAdvancedControls() {
+  $('#originalAdvancedControls').open = true;
+}
 
 function setSourceMaterialState(message) {
   const state = $('#sourceMaterialState');
@@ -184,6 +187,7 @@ async function pasteSourceMaterial(button) {
   showError('');
   try {
     const text = await readClipboardText();
+    openOriginalAdvancedControls();
     $('#sourceMaterialInput').value = text;
     clearContributionSuggestions();
     setSourceMaterialState('已带入剪贴板素材，可生成新增价值后继续创作');
@@ -446,6 +450,7 @@ function renderRecommendations(result, input) {
     secondary.type = 'button';
     secondary.textContent = '二次创作';
     secondary.addEventListener('click', () => {
+      openOriginalAdvancedControls();
       $('#sourceMaterialInput').value = `推荐草稿（仅作参考）：\n${recommendation}`;
       $('#originalContributionInput').value = '';
       clearContributionSuggestions();

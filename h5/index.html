@@ -140,43 +140,46 @@
           <button class="idea-type-button" type="button" data-idea-type="travel">旅行</button>
           <button class="idea-type-button" type="button" data-idea-type="scenery">风景</button>
         </div>
-        <div class="control-grid">
-          <label>内容形态<select id="contentFormatSelect"><option value="post">原创短帖</option><option value="thread">Thread</option><option value="article">Article</option></select></label>
-          <label>生成语言<select id="ideaLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
-          <label>字数上限<input id="contentLengthLimit" type="number" min="20" max="2000" step="1" value="100" inputmode="numeric"></label>
-        </div>
-        <div class="source-material-field">
-          <div class="profile-field-heading">
-            <label for="sourceMaterialInput">参考素材或话题</label>
-            <div class="source-material-actions">
-              <button id="pasteSourceButton" class="secondary-button" type="button">粘贴素材</button>
-              <button id="clearSourceButton" class="secondary-button" type="button">清空</button>
+        <label>你的新增价值<textarea id="originalContributionInput" rows="3" placeholder="写下你的判断、真实经验、专业分析、反例或新的背景。"></textarea></label>
+        <details id="originalAdvancedControls" class="advanced-controls">
+          <summary>补充素材、账号定位或更多设置</summary>
+          <div class="control-grid">
+            <label>内容形态<select id="contentFormatSelect"><option value="post">原创短帖</option><option value="thread">Thread</option><option value="article">Article</option></select></label>
+            <label>生成语言<select id="ideaLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
+            <label>字数上限<input id="contentLengthLimit" type="number" min="20" max="2000" step="1" value="100" inputmode="numeric"></label>
+          </div>
+          <div class="source-material-field">
+            <div class="profile-field-heading">
+              <label for="sourceMaterialInput">参考素材或话题</label>
+              <div class="source-material-actions">
+                <button id="pasteSourceButton" class="secondary-button" type="button">粘贴素材</button>
+                <button id="clearSourceButton" class="secondary-button" type="button">清空</button>
+              </div>
             </div>
+            <textarea id="sourceMaterialInput" rows="3" placeholder="可选：粘贴原帖、事件背景或你想回应的话题。"></textarea>
+            <p id="sourceMaterialState" class="helper-text hidden" role="status"></p>
           </div>
-          <textarea id="sourceMaterialInput" rows="3" placeholder="可选：粘贴原帖、事件背景或你想回应的话题。"></textarea>
-          <p id="sourceMaterialState" class="helper-text hidden" role="status"></p>
-        </div>
-        <div class="contribution-suggestion-actions">
-          <button id="generateContributionSuggestionsButton" class="secondary-button" type="button">生成三份新增价值</button>
-          <span>先选一份，再按你的真实情况修改或补充。</span>
-        </div>
-        <div id="contributionSuggestions" class="contribution-suggestions hidden" aria-live="polite"></div>
-        <label>你的新增价值<textarea id="originalContributionInput" rows="3" placeholder="必填：写下你的判断、真实经验、专业分析、反例或新的背景。"></textarea></label>
-        <div class="profile-field">
-          <div class="profile-field-heading">
-            <label for="contentProfileInput">账号定位</label>
-            <button id="fillDefaultProfileButton" class="secondary-button" type="button">填充默认值</button>
+          <div class="contribution-suggestion-actions">
+            <button id="generateContributionSuggestionsButton" class="secondary-button" type="button">生成三份新增价值</button>
+            <span>先选一份，再按你的真实情况修改或补充。</span>
           </div>
-          <textarea id="contentProfileInput" rows="2" placeholder="可选：例如分享企业知识库和 AI 落地经验。"></textarea>
-        </div>
-        <button id="generateProfileRecommendationsButton" class="secondary-button" type="button">按账号定位生成主题灵感</button>
-        <section id="recommendationResult" class="card hidden">
-          <div class="result-heading"><h2>推荐草稿</h2><span id="recommendationMode" class="badge">账号定位</span></div>
-          <div id="recommendationLoading" class="reply-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在生成推荐草稿…</span></div>
-          <p id="recommendationRationale" class="helper-text"></p>
-          <div id="recommendationList" class="draft-list"></div>
-          <button id="refreshRecommendationsButton" class="text-button hidden" type="button">换一批</button>
-        </section>
+          <div id="contributionSuggestions" class="contribution-suggestions hidden" aria-live="polite"></div>
+          <div class="profile-field">
+            <div class="profile-field-heading">
+              <label for="contentProfileInput">账号定位</label>
+              <button id="fillDefaultProfileButton" class="secondary-button" type="button">填充默认值</button>
+            </div>
+            <textarea id="contentProfileInput" rows="2" placeholder="可选：例如分享企业知识库和 AI 落地经验。"></textarea>
+          </div>
+          <button id="generateProfileRecommendationsButton" class="secondary-button" type="button">按账号定位生成主题灵感</button>
+          <section id="recommendationResult" class="card hidden">
+            <div class="result-heading"><h2>推荐草稿</h2><span id="recommendationMode" class="badge">账号定位</span></div>
+            <div id="recommendationLoading" class="reply-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在生成推荐草稿…</span></div>
+            <p id="recommendationRationale" class="helper-text"></p>
+            <div id="recommendationList" class="draft-list"></div>
+            <button id="refreshRecommendationsButton" class="text-button hidden" type="button">换一批</button>
+          </section>
+        </details>
         <button id="ideasRefreshButton" class="primary-button" type="button">生成原创内容</button>
       </section>
       <section id="ideasResult" class="card hidden">

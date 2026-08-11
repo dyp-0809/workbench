@@ -48,6 +48,9 @@ h2 { margin: 0; font-size: 19px; }
 .optimize-actions .primary-button { grid-column: 1 / -1; margin-top: 0; }
 .optimize-actions .text-button { white-space: nowrap; }
 .input-heading > div { display: flex; gap: 8px; }
+.advanced-controls { margin-top: 12px; padding: 10px 12px; border: 1px solid #dce6ef; border-radius: 10px; }
+.advanced-controls > summary { cursor: pointer; color: #536471; font-size: 13px; font-weight: 700; }
+.advanced-controls[open] > summary { margin-bottom: 12px; }
 .helper-text { margin: 6px 0 12px; color: #536471; font-size: 14px; }
 textarea, input, select { width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #d6e0e8; border-radius: 9px; outline: none; background: #fff; color: inherit; font: inherit; }
 textarea { resize: vertical; min-height: 76px; }

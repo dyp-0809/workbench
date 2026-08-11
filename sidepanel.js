@@ -447,6 +447,7 @@ function handleSourceMaterialInput() {
 }
 
 function setSourceMaterial(value, stateMessage) {
+  $('#originalAdvancedControls').open = true;
   $('#sourceMaterialInput').value = value;
   clearContributionSuggestions();
   setSourceMaterialState(stateMessage);

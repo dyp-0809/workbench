@@ -93,6 +93,9 @@ h2 {
 .model-actions { grid-template-columns: repeat(2, 1fr); margin-top: 8px; }
 .model-actions #optimizeTweetButton { grid-column: 1 / -1; }
 .model-status { color: var(--muted); font-size: 10px; font-weight: 700; }
+.advanced-controls { margin-top: 10px; padding: 9px 10px; border: 1px solid #dce8f1; border-radius: 10px; }
+.advanced-controls > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
+.advanced-controls[open] > summary { margin-bottom: 10px; }
 .model-status[data-state="success"] { color: #167447; }
 .model-status[data-state="error"] { color: #8a1c1c; }
 

@@ -56,37 +56,28 @@ function initializeHumanToneControl() {
   range.addEventListener('input', update);
   update();
 }
-function initializeTweetLengthControl() {
-  const range = $('#tweetLengthLimit');
-  const output = $('#tweetLengthValue');
-  const labels = { 50: '短帖', 80: '标准', 140: '展开', 280: '长帖' };
-  const update = () => {
-    const value = normalizeTweetLengthLimit(range.value);
-    range.value = String(value);
-    const label = `${value} 字 · ${labels[value] || '自定义'}`;
-    output.textContent = label;
-    range.setAttribute('aria-valuetext', label);
+function initializeTweetLengthTabs() {
+  const input = $('#tweetLengthLimit');
+  const setValue = (value) => {
+    const normalizedValue = normalizeTweetLengthLimit(value);
+    input.value = String(normalizedValue);
     document.querySelectorAll('[data-tweet-length]').forEach((button) => {
-      const active = Number(button.dataset.tweetLength) === value;
+      const active = Number(button.dataset.tweetLength) === normalizedValue;
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     });
   };
-  range.addEventListener('input', update);
   document.querySelectorAll('[data-tweet-length]').forEach((button) => {
-    button.addEventListener('click', () => {
-      range.value = button.dataset.tweetLength;
-      update();
-    });
+    button.addEventListener('click', () => setValue(button.dataset.tweetLength));
   });
-  update();
+  setValue(input.value);
 }
 
 
 
 const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
-initializeTweetLengthControl();
+initializeTweetLengthTabs();
 
 const styleNames = {
   insightful: '补充观点',

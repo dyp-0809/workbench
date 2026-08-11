@@ -105,13 +105,13 @@
           <button class="idea-type-button" type="button" data-tweet-topic="zhihu">知乎热议</button>
         </div>
         <label>生成语言<select id="tweetLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option></select></label>
-        <div class="tweet-length-control">
-          <div class="human-tone-heading"><label for="tweetLengthLimit">字数上限</label><output id="tweetLengthValue">80 字 · 标准</output></div>
-          <input id="tweetLengthLimit" type="range" min="20" max="280" step="10" value="80" aria-label="推文字数上限">
-          <div class="tweet-length-presets" aria-label="常用推文长度">
-            <button class="tweet-length-preset" type="button" data-tweet-length="50">短帖 50</button><button class="tweet-length-preset active" type="button" data-tweet-length="80">标准 80</button><button class="tweet-length-preset" type="button" data-tweet-length="140">展开 140</button><button class="tweet-length-preset" type="button" data-tweet-length="280">长帖 280</button>
-          </div>
+        <div class="tweet-length-tabs" aria-label="字数上限">
+          <button class="tweet-length-button" type="button" data-tweet-length="50">短帖 50 字</button>
+          <button class="tweet-length-button active" type="button" data-tweet-length="80">标准 80 字</button>
+          <button class="tweet-length-button" type="button" data-tweet-length="140">展开 140 字</button>
+          <button class="tweet-length-button" type="button" data-tweet-length="280">长帖 280 字</button>
         </div>
+        <input id="tweetLengthLimit" type="hidden" value="80">
         <div class="optimize-actions">
           <button id="optimizeTweetButton" class="primary-button" type="button">生成优化文案</button>
           <button id="refreshTweetButton" class="text-button" type="button">换一批</button>

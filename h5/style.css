@@ -44,8 +44,8 @@ h2 { margin: 0; font-size: 19px; }
 .model-status strong[data-state="error"] { color: #b4234d; }
 .model-status strong[data-state="checking"] { color: #a16b00; }
 .input-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #536471; font-size: 13px; font-weight: 650; }
-.optimize-actions { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
-.optimize-actions .primary-button { margin-top: 0; }
+.optimize-actions { display: grid; grid-template-columns: repeat(2, 1fr); align-items: center; gap: 10px; }
+.optimize-actions .primary-button { grid-column: 1 / -1; margin-top: 0; }
 .optimize-actions .text-button { white-space: nowrap; }
 .input-heading > div { display: flex; gap: 8px; }
 .helper-text { margin: 6px 0 12px; color: #536471; font-size: 14px; }

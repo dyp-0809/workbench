@@ -2,6 +2,7 @@ const state = {
   post: null,
   profile: '',
   currentIdeaType: 'all',
+  currentTweetTopic: 'life',
   settings: null,
   recommendationInput: null
 };
@@ -100,7 +101,8 @@ $('#ideasRefreshButton').addEventListener('click', generateIdeas);
 $('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
 $('#sourceMaterialInput').addEventListener('input', handleSourceMaterialInput);
 $('#contentProfileInput').addEventListener('input', async () => {
-  await chrome.storage.local.set({ contentProfile: $('#contentProfileInput').value.trim() });
+  state.profile = $('#contentProfileInput').value.trim();
+  await chrome.storage.local.set({ contentProfile: state.profile });
   clearContributionSuggestions();
 });
 $('#extractSourceButton').addEventListener('click', extractSourceMaterial);
@@ -111,6 +113,13 @@ $('#generateProfileRecommendationsButton').addEventListener('click', () => gener
 $('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
+$('#generateTopicTweetsButton').addEventListener('click', generateTopicTweets);
+document.querySelectorAll('[data-tweet-topic]').forEach((button) => {
+  button.addEventListener('click', () => {
+    state.currentTweetTopic = button.dataset.tweetTopic;
+    document.querySelectorAll('[data-tweet-topic]').forEach((item) => item.classList.toggle('active', item === button));
+  });
+});
 $('#floatingTweetRewriteButton').addEventListener('click', rewriteClipboardTweet);
 document.querySelectorAll('[data-idea-type]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -124,6 +133,7 @@ $('#scanTrendingButton').addEventListener('click', scanTrendingPosts);
 $('#settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
 initializeModelControls();
 chrome.storage.local.get({ contentProfile: '' }).then(({ contentProfile }) => {
+  state.profile = contentProfile;
   $('#contentProfileInput').value = contentProfile;
 });
 
@@ -722,6 +732,44 @@ async function rewriteClipboardTweet() {
     showToast('一键二创失败', 'error');
   } finally {
     setLoading(button, false, '一键二创');
+  }
+}
+async function generateTopicTweets() {
+  const button = $('#generateTopicTweetsButton');
+  const language = $('#tweetLanguageSelect').value || 'zh';
+  const contentLengthLimit = normalizeTweetLengthLimit($('#tweetLengthLimit').value);
+  const input = {
+    sourceMode: 'profile',
+    topic: state.currentTweetTopic,
+    profile: state.profile || DEFAULT_CONTENT_PROFILE,
+    language,
+    contentLengthLimit
+  };
+  $('#tweetLengthLimit').value = String(contentLengthLimit);
+  setError('');
+  setLoading(button, true, '生成中…');
+  setTweetLoading(true);
+  showToast(`正在生成${ideaTypeNames[state.currentTweetTopic]}推文…`, 'loading');
+  try {
+    const settings = await loadSettings();
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    const result = settings.apiKey
+      ? await requestTweetRecommendations(settings, input)
+      : demoTweetRecommendations(input);
+    if (result.recommendations.length !== 3) throw new Error('模型没有返回完整的三条推文。');
+    renderTweetOptimization(
+      { posts: result.recommendations, strategy: result.rationale },
+      language,
+      settings.apiKey ? providerLabel(settings.provider) : '本地演示'
+    );
+    $('#tweetMode').textContent = `${ideaTypeNames[state.currentTweetTopic]}灵感`;
+    showToast('已生成 3 条推文', 'success');
+  } catch (error) {
+    setError(formatModelRequestError(error));
+    showToast('主题推文生成失败，请查看下方错误信息', 'error');
+  } finally {
+    setTweetLoading(false);
+    setLoading(button, false, '按主题生成 3 条推文');
   }
 }
 

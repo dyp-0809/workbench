@@ -4,6 +4,7 @@ const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
 
 let currentIdeaType = 'all';
+let currentTweetTopic = 'life';
 let lastRecommendationInput = null;
 const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投资者；关注 AI、软件工程、创作和长期投资，只写真实观察与可验证判断';
 const CONTENT_PROFILE_STORAGE_KEY = 'contentProfile';
@@ -106,6 +107,13 @@ $('#fillDefaultProfileButton').addEventListener('click', fillDefaultProfile);
 $('#generateProfileRecommendationsButton').addEventListener('click', () => generateRecommendations('profile'));
 $('#refreshRecommendationsButton').addEventListener('click', () => generateRecommendations());
 $('#optimizeTweetButton').addEventListener('click', generateTweetOptimization);
+$('#generateTopicTweetsButton').addEventListener('click', generateTopicTweets);
+for (const button of document.querySelectorAll('[data-tweet-topic]')) {
+  button.addEventListener('click', () => {
+    currentTweetTopic = button.dataset.tweetTopic;
+    for (const item of document.querySelectorAll('[data-tweet-topic]')) item.classList.toggle('active', item === button);
+  });
+}
 $('#refreshTweetButton').addEventListener('click', generateTweetOptimization);
 for (const button of document.querySelectorAll('[data-idea-type]')) {
   button.addEventListener('click', () => {
@@ -542,6 +550,40 @@ async function rewriteClipboardTweet() {
     showToast('一键二创失败', 'error');
   } finally {
     setLoading(button, false, '一键二创');
+  }
+}
+async function generateTopicTweets() {
+  const button = $('#generateTopicTweetsButton');
+  const language = $('#tweetLanguageSelect').value || 'zh';
+  const contentLengthLimit = normalizeTweetLengthLimit($('#tweetLengthLimit').value);
+  const input = {
+    sourceMode: 'profile',
+    topic: currentTweetTopic,
+    profile: localStorage.getItem(CONTENT_PROFILE_STORAGE_KEY) || DEFAULT_CONTENT_PROFILE,
+    language,
+    contentLengthLimit
+  };
+  $('#tweetLengthLimit').value = String(contentLengthLimit);
+  setLoading(button, true, '生成中…');
+  setTweetLoading(true);
+  showError('');
+  showToast(`正在生成${ideaTypeNames[currentTweetTopic]}推文…`, 'loading');
+  try {
+    const result = normalizeTweetRecommendations(await requestModel(
+      getSettings(),
+      { ...input, language: languageNames[language] },
+      buildTweetRecommendationsPrompt({ ...input, language: languageNames[language] })
+    ), input);
+    if (result.recommendations.length !== 3) throw new Error('模型没有返回完整的三条推文。');
+    renderTweetOptimization({ posts: result.recommendations, strategy: result.rationale }, language);
+    $('#tweetMode').textContent = `${ideaTypeNames[currentTweetTopic]}灵感`;
+    showToast('已生成 3 条推文', 'success');
+  } catch (error) {
+    showError(error.message);
+    showToast('主题推文生成失败，请查看下方错误信息', 'error');
+  } finally {
+    setTweetLoading(false);
+    setLoading(button, false, '按主题生成 3 条推文');
   }
 }
 

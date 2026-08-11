@@ -91,6 +91,7 @@ h2 {
 .model-bar .section-heading { margin-bottom: 9px; }
 .model-controls, .model-actions { display: grid; gap: 7px; }
 .model-actions { grid-template-columns: repeat(2, 1fr); margin-top: 8px; }
+.model-actions #optimizeTweetButton { grid-column: 1 / -1; }
 .model-status { color: var(--muted); font-size: 10px; font-weight: 700; }
 .model-status[data-state="success"] { color: #167447; }
 .model-status[data-state="error"] { color: #8a1c1c; }

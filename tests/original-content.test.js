@@ -179,3 +179,16 @@ test('推文优化每两句话以空行分段', () => {
 
   assert.deepEqual(result.posts, ['第一句。第二句。\n\n第三句。第四句']);
 });
+test('账号定位主题灵感围绕所选主题生成且保留美股安全边界', () => {
+  const prompt = engine.buildTweetRecommendationsPrompt({
+    sourceMode: 'profile',
+    profile: '程序员、长期投资者',
+    topic: 'stock',
+    language: '中文',
+    contentLengthLimit: 80
+  });
+
+  assert.match(prompt, /当前主题为“美股”/);
+  assert.match(prompt, /只围绕所选主题生成/);
+  assert.match(prompt, /不得生成买卖建议/);
+});

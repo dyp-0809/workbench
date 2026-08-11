@@ -621,6 +621,7 @@ async function generateRecommendations(sourceMode, source = '') {
   const input = sourceMode ? {
     sourceMode,
     source,
+    topic: state.currentIdeaType,
     profile,
     language: $('#ideaLanguageSelect').value || 'zh',
     contentLengthLimit: normalizeContentLengthLimit($('#contentLengthLimit').value)
@@ -643,12 +644,14 @@ async function generateRecommendations(sourceMode, source = '') {
     setError(formatModelRequestError(error));
   } finally {
     $('#recommendationLoading').classList.add('hidden');
-    setLoading(button, false, sourceMode ? '按账号定位推荐推文' : '换一批');
+    setLoading(button, false, sourceMode ? '生成主题灵感' : '换一批');
   }
 }
 
 function renderRecommendations(result, input) {
-  $('#recommendationModeBadge').textContent = input.sourceMode === 'trending' ? '热点参考' : '账号定位';
+  $('#recommendationModeBadge').textContent = input.sourceMode === 'trending'
+    ? '热点参考'
+    : `${ideaTypeNames[input.topic] ?? ideaTypeNames.all}灵感`;
   $('#recommendationRationale').textContent = result.rationale || '推荐草稿仅供参考，可直接复制或继续二次创作。';
   const list = $('#recommendationList');
   list.replaceChildren();

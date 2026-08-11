@@ -16,11 +16,13 @@
   const ideaTypeNames = Object.freeze({
     all: '全部',
     code: '代码',
-    stock: '股票',
-    mood: '心情',
-    life: '人生',
-    work: '职场',
+    tools: '实用工具',
     ai: 'AI',
+    photography: '摄影技巧',
+    stock: '美股',
+    mood: '心情',
+    life: '人生感悟',
+    work: '职场',
     daily: '生活',
     reading: '读书感悟',
     travel: '旅行',
@@ -287,20 +289,22 @@
   function buildTweetRecommendationsPrompt(options = {}) {
     const sourceMode = options.sourceMode === 'trending' ? 'trending' : 'profile';
     const profile = String(options.profile || '未提供账号定位').trim();
+    const topic = ideaTypeNames[options.topic] || ideaTypeNames.all;
     const language = options.language || languageNames.zh;
     const contentLengthLimit = normalizeContentLengthLimit(options.contentLengthLimit);
     const sourceRule = sourceMode === 'trending'
       ? '热点素材仅作可追溯参考；所有时效事实必须来自用户提供的素材，不得补造背景、数据或趋势。'
       : '只生成常青观点、观察或待验证问题；不得把近期事件、行情、新闻或平台热点写成已知事实。';
     return `你是 X 推荐推文助手。你只生成“推荐草稿”，不声称内容来自用户本人，不自动发布。
-账号定位为“${profile}”。
+账号定位为“${profile}”。当前主题为“${topic}”。
 推荐规则：
 1. 输出恰好 3 条推荐草稿，每条只有一个可独立成立的观点，三条切入明显不同。
 2. ${sourceRule}
-3. 使用自然口语、具体观察和克制判断；避免标题腔、客服腔、总结腔、AI 套话、金句和营销腔。
-4. 不得虚构用户经历、身份、数据、来源、地点或现场细节；不要求点赞、回复、收藏、关注或转发。
-5. 美股、医疗、法律、政治等高风险主题只写观察与待验证问题；不得生成买卖建议、收益承诺或确定性结论。
-6. 每条内容必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；未被系统截断时结尾不使用句号、问号或感叹号。
+3. 只围绕所选主题生成；当主题为“全部”时，选择最贴合账号定位的一个长期主题。
+4. 使用自然口语、具体观察和克制判断；避免标题腔、客服腔、总结腔、AI 套话、金句和营销腔。
+5. 不得虚构用户经历、身份、数据、来源、地点或现场细节；不要求点赞、回复、收藏、关注或转发。
+6. 美股、医疗、法律、政治等高风险主题只写观察与待验证问题；不得生成买卖建议、收益承诺或确定性结论。
+7. 每条内容必须不超过 ${contentLengthLimit} 个字符，标点和换行也计入；未被系统截断时结尾不使用句号、问号或感叹号。
 请使用${language}输出。只输出 JSON：{"recommendations":string[],"rationale":string}`;
   }
 

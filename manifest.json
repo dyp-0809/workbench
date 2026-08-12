@@ -3,7 +3,7 @@
   "name": "X 助手",
   "version": "0.2.0",
   "description": "读取当前 X 帖子，生成经过人工确认的评论草稿。不会自动发布。",
- "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel", "clipboardRead"],
+ "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel", "clipboardRead", "clipboardWrite"],
   "host_permissions": ["https://api.deepseek.com/*", "https://api.openai.com/*", "https://x.com/*", "https://twitter.com/*"],
   "content_scripts": [
     {

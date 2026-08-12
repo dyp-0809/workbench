@@ -4,7 +4,8 @@ const state = {
   currentIdeaType: 'all',
   currentTweetTopic: 'life',
   settings: null,
-  recommendationInput: null
+  recommendationInput: null,
+  inspirationDefinition: ''
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -75,7 +76,7 @@ function initializeTweetLengthTabs() {
 
 
 
-const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations } = XReplyCopilotIdeaEngine;
+const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, demoContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, demoOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations, demoTweetRecommendations, buildInspirationCollectionPrompt, normalizeInspirationCollection } = XReplyCopilotIdeaEngine;
 initializeHumanToneControl();
 initializeTweetLengthTabs();
 
@@ -147,12 +148,19 @@ document.querySelectorAll('[data-idea-type]').forEach((button) => {
   });
 });
 $('#scanTrendingButton').addEventListener('click', scanTrendingPosts);
+$('#switchInspirationDefinitionButton').addEventListener('click', () => loadInspirationCollection(true));
+$('#refreshInspirationButton').addEventListener('click', () => loadInspirationCollection(false));
+$('#inspirationDefinitionInput').addEventListener('input', () => {
+  state.inspirationDefinition = $('#inspirationDefinitionInput').value.trim();
+});
 
 $('#settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
 initializeModelControls();
-chrome.storage.local.get({ contentProfile: '' }).then(({ contentProfile }) => {
+chrome.storage.local.get({ contentProfile: '', inspirationDefinition: '' }).then(({ contentProfile, inspirationDefinition }) => {
   state.profile = contentProfile;
   $('#contentProfileInput').value = contentProfile;
+  state.inspirationDefinition = inspirationDefinition;
+  $('#inspirationDefinitionInput').value = inspirationDefinition;
 });
 
 async function initializeModelControls() {
@@ -324,6 +332,72 @@ async function scanTrendingPosts() {
   } finally {
     setLoading($('#scanTrendingButton'), false, '读取当前页');
   }
+}
+
+async function loadInspirationCollection(shouldSaveDefinition) {
+  const definition = $('#inspirationDefinitionInput').value.trim();
+  if (!definition) {
+    setError('请先填写内容定义。');
+    $('#inspirationDefinitionInput').focus();
+    return;
+  }
+
+  const button = shouldSaveDefinition ? $('#switchInspirationDefinitionButton') : $('#refreshInspirationButton');
+  setError('');
+  setLoading(button, true, shouldSaveDefinition ? '切换中…' : '刷新中…');
+  $('#inspirationLoading').classList.remove('hidden');
+  $('#inspirationState').textContent = '正在由模型生成讨论灵感…';
+  $('#inspirationState').classList.remove('hidden');
+
+  try {
+    if (shouldSaveDefinition) {
+      state.inspirationDefinition = definition;
+      await chrome.storage.local.set({ inspirationDefinition: definition });
+    }
+    const settings = await loadSettings();
+    settings.apiKey = settings.apiKeys?.[settings.provider] || settings.apiKey;
+    if (!settings.apiKey) throw new Error('请先在设置中配置模型 API Key。');
+    const ideas = await requestInspirationCollection(settings, definition);
+    if (ideas.length !== 10) throw new Error('模型没有返回完整的 10 条讨论灵感。');
+    renderInspirationCollection(ideas, definition, `${providerLabel(settings.provider)}生成`);
+    showToast('已生成 10 条讨论灵感', 'success');
+  } catch (error) {
+    setError(formatModelRequestError(error));
+    showToast('灵感集合生成失败，请查看下方错误信息', 'error');
+  } finally {
+    $('#inspirationLoading').classList.add('hidden');
+    $('#inspirationState').classList.add('hidden');
+    setLoading(button, false, shouldSaveDefinition ? '切换内容' : '手动刷新');
+  }
+}
+
+function renderInspirationCollection(ideas, definition, mode) {
+  $('#inspirationResultSection').classList.remove('hidden');
+  $('#inspirationModeBadge').textContent = `${ideas.length} 条 · ${mode}`;
+  const list = $('#inspirationList');
+  list.replaceChildren();
+  ideas.forEach((idea, index) => {
+    const card = document.createElement('article');
+    card.className = 'idea-card';
+    card.append(
+      makeLine(`内容 ${index + 1}`, idea.title),
+      makeLine('讨论线索', idea.summary),
+      makeLine('关注原因', idea.reason),
+      makeLine('原创切入', idea.angle),
+      copyIdeaButton(`复制内容 ${index + 1}`, formatInspirationIdea(idea))
+    );
+    list.append(card);
+  });
+  $('#inspirationState').textContent = `已由接入模型按“${definition}”生成 10 条讨论灵感，请核验时效事实。`;
+}
+
+function formatInspirationIdea(idea) {
+  return [
+    idea.title,
+    `讨论线索：${idea.summary}`,
+    `关注原因：${idea.reason}`,
+    `原创切入：${idea.angle}`
+  ].join('\n');
 }
 
 function enrichTrendingPost(post, previous, capturedAt) {
@@ -973,6 +1047,31 @@ async function requestTweetRecommendations(settings, input) {
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error('模型没有返回可用内容。');
   return normalizeTweetRecommendations(JSON.parse(content), input);
+}
+
+async function requestInspirationCollection(settings, definition) {
+  const response = await fetch(requestEndpoint(settings), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
+    signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: settings.model,
+      temperature: 0.8,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: buildInspirationCollectionPrompt(definition) },
+        { role: 'user', content: JSON.stringify({ contentDefinition: definition }) }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型请求失败（${response.status}）：${detail.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) throw new Error('模型没有返回可用内容。');
+  return normalizeInspirationCollection(JSON.parse(content));
 }
 
 async function requestContributionSuggestions(settings, input) {

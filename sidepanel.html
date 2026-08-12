@@ -43,6 +43,7 @@
 
     <nav class="tabs" aria-label="功能切换">
       <button class="tab-button active" data-tab="ideas" type="button">原创创作</button>
+      <button class="tab-button" data-tab="inspiration" type="button">灵感集合</button>
       <button class="tab-button" data-tab="trending" type="button">发现选题</button>
       <button class="tab-button" data-tab="optimize" type="button">推文优化</button>
       <button class="tab-button" data-tab="reply" type="button">回复建议</button>
@@ -251,6 +252,30 @@
         </div>
         <div id="ideaLoading" class="idea-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在组织原创内容…</span></div>
         <div id="ideaCard" class="random-idea-card hidden"></div>
+      </section>
+    </section>
+
+    <section id="inspirationTab" data-tab-panel="inspiration" class="hidden">
+      <section class="section">
+        <div class="section-heading">
+          <h2>近半月讨论灵感</h2>
+          <span class="badge">模型生成</span>
+        </div>
+        <p class="helper-text">接入模型按你的内容定义一次生成 10 条讨论灵感。模型未必具备实时联网能力，时效事实需自行核验。</p>
+        <label class="idea-language-label">内容定义<textarea id="inspirationDefinitionInput" rows="2" placeholder="例如：企业知识库、AI Agent 与软件工程"></textarea></label>
+        <div class="section-actions">
+          <button id="switchInspirationDefinitionButton" class="primary-button" type="button">切换内容</button>
+          <button id="refreshInspirationButton" class="secondary-button" type="button">手动刷新</button>
+        </div>
+        <div id="inspirationLoading" class="idea-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在生成讨论灵感…</span></div>
+        <div id="inspirationState" class="empty-state">填写内容定义后点击“切换内容”。需先在设置中配置模型 API Key。</div>
+      </section>
+      <section id="inspirationResultSection" class="section hidden">
+        <div class="section-heading">
+          <h2>内容清单</h2>
+          <span id="inspirationModeBadge" class="badge">待读取</span>
+        </div>
+        <div id="inspirationList" class="draft-list"></div>
       </section>
     </section>
 

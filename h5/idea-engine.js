@@ -46,6 +46,47 @@
     return Math.min(MAX_CONTENT_LENGTH_LIMIT, Math.max(MIN_CONTENT_LENGTH_LIMIT, Math.floor(parsed)));
   }
 
+  const INSPIRATION_COLLECTION_SIZE = 10;
+
+  function buildInspirationCollectionPrompt(definition) {
+    const contentDefinition = String(definition || '').trim().slice(0, 200);
+    if (!contentDefinition) throw new Error('请先填写内容定义。');
+
+    return `你是内容研究助手。根据用户的内容定义，生成恰好 ${INSPIRATION_COLLECTION_SIZE} 条可用于创作的讨论灵感。
+内容定义：“${contentDefinition}”。
+输出规则：
+1. 优先依据你已有的知识和用户定义判断值得关注的讨论方向；不要声称你已经读取实时热榜、新闻、社交媒体或具体互动数据。
+2. 每条灵感聚焦一个具体、可讨论的问题或变化，避免泛泛主题、标题党和无意义对立。
+3. 涉及时效事件、数据、人物、投资、医疗、法律或政治时，只能表述为待核验的讨论线索，不得编造来源、数据、发布时间或热度。
+4. title 是简洁的讨论标题；summary 说明正在讨论的核心分歧或问题；reason 说明为什么它可能值得在近期关注，必须使用“可能”“待核验”等审慎表述；angle 给出一个不复述现有观点的原创切入角度。
+5. 所有字段使用中文，不要自动发布或要求用户互动。
+只输出 JSON：{"ideas":[{"title":string,"summary":string,"reason":string,"angle":string}]}`;
+  }
+
+  function normalizeInspirationCollection(result) {
+    const ideas = Array.isArray(result?.ideas) ? result.ideas : [];
+    const normalizedIdeas = [];
+    const titles = new Set();
+
+    for (const idea of ideas) {
+      const title = String(idea?.title || '').trim();
+      const summary = String(idea?.summary || '').trim();
+      if (!title || !summary || titles.has(title)) continue;
+
+      titles.add(title);
+      normalizedIdeas.push({
+        title,
+        summary,
+        reason: String(idea?.reason || '请先核验这条讨论线索的时效性和事实基础。').trim(),
+        angle: String(idea?.angle || '补充你的真实判断、经验、案例或反例。').trim()
+      });
+      if (normalizedIdeas.length === INSPIRATION_COLLECTION_SIZE) break;
+    }
+
+    return normalizedIdeas;
+  }
+
+
   function constrainOriginalContent(content, limit) {
     const characters = [...String(content || '').trim()];
     if (characters.length <= limit) {
@@ -292,7 +333,6 @@
     const profile = String(options.profile || '未提供账号定位').trim();
     const topic = ideaTypeNames[options.topic] || ideaTypeNames.all;
     const language = options.language || languageNames.zh;
-    // TODO: 接入用户配置的 GNews API 后，将近七天可核验的社会新闻标题、摘要和原始链接作为来源传入；未提供来源时不得声称实时热度。
     const contentLengthLimit = normalizeContentLengthLimit(options.contentLengthLimit);
     const sourceRule = sourceMode === 'trending'
       ? '热点素材仅作可追溯参考；所有时效事实必须来自用户提供的素材，不得补造背景、数据或趋势。'
@@ -359,6 +399,8 @@
     ideaTypeNames,
     contentFormatNames,
     replyActionNames,
+    buildInspirationCollectionPrompt,
+    normalizeInspirationCollection,
     originalityLevelNames,
     normalizeContentLengthLimit,
     normalizeTweetLengthLimit,

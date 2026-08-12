@@ -214,3 +214,26 @@ test('主题推文按字数限制收紧并每两句空行分段', () => {
   assert.deepEqual(result.recommendations, ['第一句。第二句。\n\n第三句。第四句']);
   assert.equal(result.contentLengthLimit, 80);
 });
+
+test('灵感集合由模型生成十条待核验讨论线索', () => {
+  const prompt = engine.buildInspirationCollectionPrompt('企业知识库 AI Agent');
+  const ideas = engine.normalizeInspirationCollection({
+    ideas: Array.from({ length: 11 }, (_, index) => ({
+      title: `讨论主题 ${index + 1}`,
+      summary: `讨论线索 ${index + 1}`,
+      reason: `可能的关注原因 ${index + 1}`,
+      angle: `原创切入 ${index + 1}`
+    }))
+  });
+
+  assert.match(prompt, /恰好 10 条/);
+  assert.match(prompt, /不要声称你已经读取实时热榜/);
+  assert.match(prompt, /待核验/);
+  assert.equal(ideas.length, 10);
+  assert.deepEqual(ideas[0], {
+    title: '讨论主题 1',
+    summary: '讨论线索 1',
+    reason: '可能的关注原因 1',
+    angle: '原创切入 1'
+  });
+});

@@ -25,7 +25,7 @@ const defaults = {
   endpoint: presets['openai-compatible'].endpoint,
   model: presets['openai-compatible'].model,
   apiKey: '',
-  apiKeys: {}
+  apiKeys: {},
 };
 
 let currentSettings;

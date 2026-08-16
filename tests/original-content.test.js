@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-require('../h5/idea-engine.js');
+require('../packages/h5/idea-engine.js');
 
 const engine = globalThis.XReplyCopilotIdeaEngine;
 

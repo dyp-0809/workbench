@@ -6,7 +6,10 @@ const fields = {
   fetchModels: document.querySelector('#fetchModels'),
   testConnection: document.querySelector('#testConnection'),
   connectionStatus: document.querySelector('#connectionStatus'),
-  modelOptions: document.querySelector('#modelOptions')
+  modelOptions: document.querySelector('#modelOptions'),
+  localHubPairingCode: document.querySelector('#localHubPairingCode'),
+  pairLocalHub: document.querySelector('#pairLocalHub'),
+  localHubStatus: document.querySelector('#localHubStatus')
 };
 
 const presets = {
@@ -26,6 +29,7 @@ const defaults = {
   model: presets['openai-compatible'].model,
   apiKey: '',
   apiKeys: {},
+  localHubToken: ''
 };
 
 let currentSettings;
@@ -62,6 +66,7 @@ async function initialize() {
   fields.endpoint.addEventListener('change', clearConnectionStatus);
   fields.fetchModels.addEventListener('click', fetchModels);
   fields.testConnection.addEventListener('click', testConnection);
+  fields.pairLocalHub.addEventListener('click', pairLocalHub);
 
   if (fields.provider.value === 'deepseek' && fields.apiKey.value.trim()) {
     fetchModels();
@@ -88,6 +93,35 @@ document.querySelector('#save').addEventListener('click', async () => {
   await chrome.storage.local.set(currentSettings);
   showStatus('已保存。');
 });
+async function pairLocalHub() {
+  const code = fields.localHubPairingCode.value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    setLocalHubStatus('请输入本地工作台显示的六位配对码。', true);
+    return;
+  }
+  setBusy(fields.pairLocalHub, true, '配对中…');
+  try {
+    const response = await fetch('http://127.0.0.1:4318/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.token) throw new Error(payload.error || `HTTP ${response.status}`);
+    await chrome.storage.local.set({ localHubToken: payload.token });
+    fields.localHubPairingCode.value = '';
+    setLocalHubStatus('已配对。回复建议会同步到本地 Content Hub。');
+  } catch (error) {
+    setLocalHubStatus(`配对失败：${error.message}`, true);
+  } finally {
+    setBusy(fields.pairLocalHub, false, '配对本地 Content Hub');
+  }
+}
+
+function setLocalHubStatus(message, isError = false) {
+  fields.localHubStatus.textContent = message;
+  fields.localHubStatus.style.color = isError ? '#8a1c1c' : '#167447';
+}
 async function fetchModels() {
   const apiKey = fields.apiKey.value.trim();
   if (!apiKey) {

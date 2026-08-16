@@ -5,7 +5,9 @@ const state = {
   currentTweetTopic: 'life',
   settings: null,
   recommendationInput: null,
-  inspirationDefinition: ''
+  inspirationDefinition: '',
+  publishQueue: [],
+  replyDraftIds: []
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -94,6 +96,9 @@ const styleNames = {
 const MODEL_REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投资者；关注 AI、软件工程、创作和长期投资，只写真实观察与可验证判断';
 
+const { MAX_PUBLISH_QUEUE_ITEMS, QUEUE_STATUS, createQueuedPost, normalizeQueuedPosts, planQueuedPost, markQueuedPostScheduled, restoreQueuedPost } = XPublishingQueue;
+const PUBLISH_QUEUE_STORAGE_KEY = 'publishQueue';
+
 function formatModelRequestError(error) {
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || /aborted|timeout|timed out/i.test(error?.message || '')) {
     return '模型响应超时或请求被浏览器中止，请稍后重试；如果持续出现，请检查网络、API Key 和模型服务状态。';
@@ -156,11 +161,13 @@ $('#inspirationDefinitionInput').addEventListener('input', () => {
 
 $('#settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
 initializeModelControls();
-chrome.storage.local.get({ contentProfile: '', inspirationDefinition: '' }).then(({ contentProfile, inspirationDefinition }) => {
-  state.profile = contentProfile;
-  $('#contentProfileInput').value = contentProfile;
-  state.inspirationDefinition = inspirationDefinition;
-  $('#inspirationDefinitionInput').value = inspirationDefinition;
+chrome.storage.local.get({ contentProfile: '', inspirationDefinition: '', [PUBLISH_QUEUE_STORAGE_KEY]: [] }).then((stored) => {
+  state.profile = stored.contentProfile;
+  $('#contentProfileInput').value = stored.contentProfile;
+  state.inspirationDefinition = stored.inspirationDefinition;
+  $('#inspirationDefinitionInput').value = stored.inspirationDefinition;
+  state.publishQueue = normalizeQueuedPosts(stored[PUBLISH_QUEUE_STORAGE_KEY]);
+  renderPublishQueue();
 });
 
 async function initializeModelControls() {
@@ -273,8 +280,8 @@ $('#postCard').addEventListener('input', () => {
   }
   setChoiceValue('languageSelect', detectReplyLanguage(text));
   state.post = state.post
-    ? { ...state.post, contextText: text }
-    : { text, contextText: text };
+    ? { ...state.post, contextText: text, sourceKind: 'manualInput' }
+    : { text, contextText: text, sourceKind: 'manualInput' };
   $('#postState').classList.add('hidden');
 });
 
@@ -295,7 +302,7 @@ async function extractPost() {
     const result = await chrome.runtime.sendMessage({ type: 'extract-current-post' });
     if (!result?.ok) throw new Error(result?.error || '读取帖子失败。');
 
-    state.post = result.post;
+    state.post = { ...result.post, sourceKind: 'xPage' };
     $('#postState').classList.add('hidden');
     $('#postCard').classList.remove('hidden');
     $('#postCard').textContent = result.post.contextText || result.post.text;
@@ -384,7 +391,8 @@ function renderInspirationCollection(ideas, definition, mode) {
       makeLine('讨论线索', idea.summary),
       makeLine('关注原因', idea.reason),
       makeLine('原创切入', idea.angle),
-      copyIdeaButton(`复制内容 ${index + 1}`, formatInspirationIdea(idea))
+      copyIdeaButton(`复制内容 ${index + 1}`, formatInspirationIdea(idea)),
+      createAddToPublishQueueButton(`灵感：${idea.title}`, formatInspirationIdea(idea), 'inspiration')
     );
     list.append(card);
   });
@@ -398,6 +406,132 @@ function formatInspirationIdea(idea) {
     `关注原因：${idea.reason}`,
     `原创切入：${idea.angle}`
   ].join('\n');
+}
+
+function addToPublishQueue(input) {
+  try {
+    const queuedPost = createQueuedPost(input);
+    if (state.publishQueue.some((post) => post.content === queuedPost.content)) {
+      showToast('这条内容已在待发布队列中', 'error');
+      return;
+    }
+    if (state.publishQueue.length >= MAX_PUBLISH_QUEUE_ITEMS) {
+      throw new Error(`待发布队列最多保留 ${MAX_PUBLISH_QUEUE_ITEMS} 条内容。`);
+    }
+    state.publishQueue = [queuedPost, ...state.publishQueue];
+    savePublishQueue();
+    showToast('已加入待发布队列', 'success');
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+function savePublishQueue() {
+  renderPublishQueue();
+  return chrome.storage.local.set({ [PUBLISH_QUEUE_STORAGE_KEY]: state.publishQueue });
+}
+
+function renderPublishQueue() {
+  const queue = state.publishQueue;
+  $('#publishQueueBadge').textContent = `${queue.length} 条`;
+  $('#publishQueueSection').classList.toggle('hidden', !queue.length);
+  $('#publishQueueState').classList.toggle('hidden', Boolean(queue.length));
+  if (!queue.length) return;
+
+  const list = $('#publishQueueList');
+  list.replaceChildren();
+  queue.forEach((post) => {
+    const card = document.createElement('article');
+    card.className = 'idea-card';
+    const scheduled = post.status === QUEUE_STATUS.scheduledExternally;
+    const timeZone = post.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const dateTimeInput = document.createElement('input');
+    dateTimeInput.type = 'datetime-local';
+    dateTimeInput.value = toLocalDateTimeInput(post.plannedAt);
+    dateTimeInput.setAttribute('aria-label', `${post.title}的计划发布时间`);
+
+    card.append(
+      makeLine('内容', post.title),
+      makeLine('状态', scheduled ? '已由你在 X 中设置定时' : '待发布'),
+      makeLine('正文', post.content),
+      makeLine('时区', timeZone)
+    );
+    if ([...post.content].length > 280) {
+      card.append(makeLine('定时限制', '超过 280 字符；X 网页端无法定时长帖，请在 X 中确认可用的发布方式。'));
+    }
+    card.append(dateTimeInput);
+    if (post.plannedAt) card.append(makeLine('计划时间', formatPublishTime(post.plannedAt, timeZone)));
+
+    const savePlan = document.createElement('button');
+    savePlan.className = 'secondary-button';
+    savePlan.type = 'button';
+    savePlan.textContent = '保存计划';
+    savePlan.addEventListener('click', () => {
+      try {
+        updateQueuedPost(post.id, planQueuedPost(post, dateTimeInput.value, timeZone));
+        showToast('已保存本地发布计划', 'success');
+      } catch (error) {
+        setError(error.message);
+      }
+    });
+
+    const copyAndOpen = document.createElement('button');
+    copyAndOpen.className = 'copy-button';
+    copyAndOpen.type = 'button';
+    copyAndOpen.textContent = '复制并打开 X';
+    copyAndOpen.addEventListener('click', async () => {
+      const copied = await copyText(post.content);
+      if (!copied) return;
+      await chrome.tabs.create({ url: 'https://x.com/compose/post' });
+      showToast('已复制；请在 X 中粘贴并通过日历手动确认定时', 'success');
+    });
+
+    const confirmScheduled = document.createElement('button');
+    confirmScheduled.className = 'secondary-button';
+    confirmScheduled.type = 'button';
+    confirmScheduled.textContent = scheduled ? '移回待发布' : '标记已在 X 定时';
+    confirmScheduled.addEventListener('click', () => {
+      try {
+        updateQueuedPost(post.id, scheduled ? restoreQueuedPost(post) : markQueuedPostScheduled(post));
+        showToast(scheduled ? '已移回待发布' : '已记录为在 X 中定时', 'success');
+      } catch (error) {
+        setError(error.message);
+      }
+    });
+
+    const remove = document.createElement('button');
+    remove.className = 'secondary-button';
+    remove.type = 'button';
+    remove.textContent = '移除';
+    remove.addEventListener('click', () => {
+      state.publishQueue = state.publishQueue.filter((item) => item.id !== post.id);
+      savePublishQueue();
+      showToast('已从待发布队列移除', 'success');
+    });
+    card.append(savePlan, copyAndOpen, confirmScheduled, remove);
+    list.append(card);
+  });
+}
+
+function updateQueuedPost(id, updatedPost) {
+  state.publishQueue = state.publishQueue.map((post) => post.id === id ? updatedPost : post);
+  savePublishQueue();
+}
+
+function toLocalDateTimeInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatPublishTime(value, timeZone) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone
+  }).format(new Date(value));
 }
 
 function enrichTrendingPost(post, previous, capturedAt) {
@@ -506,7 +640,11 @@ async function generateDrafts() {
     const result = settings.apiKey
       ? await requestModel(settings, profile, language, style, humanTone)
       : demoDrafts(language, style);
-
+    try {
+      state.replyDraftIds = await persistReplySession(result, { language, style, humanTone });
+    } catch {
+      state.replyDraftIds = [];
+    }
     renderResult(result, settings.apiKey ? `${providerLabel(settings.provider)}生成` : '本地演示');
     showToast('回复草稿生成成功', 'success');
   } catch (error) {
@@ -520,6 +658,37 @@ async function generateDrafts() {
 
 function setDraftLoading(loading) {
   $('#draftLoading').classList.toggle('hidden', !loading);
+}
+async function persistReplySession(result, input) {
+  const { localHubToken = '' } = await chrome.storage.local.get({ localHubToken: '' });
+  if (!localHubToken) return [];
+  const response = await fetch('http://127.0.0.1:4318/v1/reply-sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localHubToken}` },
+    body: JSON.stringify({
+      targetPostText: state.post.contextText || state.post.text,
+      sourceKind: state.post.sourceKind || 'manualInput',
+      sourceUrl: state.post.url || null,
+      language: input.language,
+      style: input.style,
+      humanTone: input.humanTone,
+      result
+    })
+  });
+  if (!response.ok) return [];
+  const payload = await response.json();
+  return Array.isArray(payload.session?.drafts) ? payload.session.drafts.map((draft) => draft.id) : [];
+}
+
+async function recordReplyDraftEvent(draftId, type) {
+  if (!draftId) return;
+  const { localHubToken = '' } = await chrome.storage.local.get({ localHubToken: '' });
+  if (!localHubToken) return;
+  await fetch(`http://127.0.0.1:4318/v1/reply-drafts/${draftId}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localHubToken}` },
+    body: JSON.stringify({ type })
+  });
 }
 
 function fillDefaultProfile() {
@@ -772,7 +941,7 @@ function renderRecommendations(result, input) {
       $('#originalContributionInput').value = '';
       $('#originalContributionInput').focus();
     });
-    card.append(text, copyIdeaButton(`复制草稿 ${index + 1}`, recommendation), secondary);
+    card.append(text, copyIdeaButton(`复制草稿 ${index + 1}`, recommendation), secondary, createAddToPublishQueueButton(`推荐草稿 ${index + 1}`, recommendation, 'recommendation'));
     list.append(card);
   });
   $('#refreshRecommendationsButton').classList.remove('hidden');
@@ -907,7 +1076,7 @@ function renderTweetOptimization(result, language, mode) {
       $('#tweetFeedbackInput').value = '';
       await generateTweetOptimization({ idea: post, feedback: '' });
     });
-    card.append(text, copy, refine);
+    card.append(text, copy, refine, createAddToPublishQueueButton(`优化文案 ${index + 1}`, post, 'optimized'));
     list.append(card);
   });
 }
@@ -1165,7 +1334,7 @@ function renderOriginalContent(result, language, mode) {
       card.append(warning);
     }
   }
-  card.append(copyIdeaButton('复制原创草稿', result.content));
+  card.append(copyIdeaButton('复制原创草稿', result.content), createAddToPublishQueueButton('原创草稿', result.content, 'original'));
   card.classList.remove('hidden');
   return hasTranslation;
 }
@@ -1185,6 +1354,15 @@ async function copyText(value) {
     showToast('复制失败，请手动选择文字', 'error');
     return false;
   }
+}
+
+function createAddToPublishQueueButton(title, content, kind) {
+  const button = document.createElement('button');
+  button.className = 'secondary-button';
+  button.type = 'button';
+  button.textContent = '加入待发布';
+  button.addEventListener('click', () => addToPublishQueue({ title, content, kind }));
+  return button;
 }
 
 function copyIdeaButton(label, value) {
@@ -1316,6 +1494,7 @@ function renderResult(result, mode) {
     copy.textContent = `复制草稿 ${index + 1}`;
     copy.addEventListener('click', async () => {
       const copied = await copyText(draft);
+      if (copied) recordReplyDraftEvent(state.replyDraftIds[index], 'copied').catch(() => {});
       copy.textContent = copied ? '已复制' : '复制失败';
       setTimeout(() => { copy.textContent = `复制草稿 ${index + 1}`; }, copied ? 1400 : 2200);
     });

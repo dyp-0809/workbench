@@ -44,6 +44,7 @@
     <nav class="tabs" aria-label="功能切换">
       <button class="tab-button active" data-tab="ideas" type="button">原创创作</button>
       <button class="tab-button" data-tab="inspiration" type="button">灵感集合</button>
+      <button class="tab-button" data-tab="publish" type="button">发布计划</button>
       <button class="tab-button" data-tab="trending" type="button">发现选题</button>
       <button class="tab-button" data-tab="optimize" type="button">推文优化</button>
       <button class="tab-button" data-tab="reply" type="button">回复建议</button>
@@ -279,6 +280,24 @@
       </section>
     </section>
 
+    <section id="publishTab" data-tab-panel="publish" class="hidden">
+      <section class="section">
+        <div class="section-heading">
+          <h2>晚间发布计划</h2>
+          <span class="badge">本地队列</span>
+        </div>
+        <p class="helper-text">白天将内容加入待发布队列；晚上在此安排时间，复制后到 X 的原生日历中手动确认定时。不会自动填写或发布。</p>
+        <div id="publishQueueState" class="empty-state">从灵感集合、原创内容或推文优化结果中筛选内容，加入待发布队列。</div>
+      </section>
+      <section id="publishQueueSection" class="section hidden">
+        <div class="section-heading">
+          <h2>待发布内容</h2>
+          <span id="publishQueueBadge" class="badge">0 条</span>
+        </div>
+        <div id="publishQueueList" class="draft-list"></div>
+      </section>
+    </section>
+
     <section id="trendingTab" data-tab-panel="trending" class="hidden">
       <section class="section">
         <div class="section-heading">
@@ -301,7 +320,8 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <p id="errorMessage" class="error hidden"></p>
   </main>
-  <script src="h5/idea-engine.js"></script>
+  <script src="packages/h5/idea-engine.js"></script>
+  <script src="publishing-queue.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -1,0 +1,173 @@
+@import 'tailwindcss';
+@import '@appica/ui-react/styles.css';
+
+@source '../../../node_modules/@appica/ui-react/dist';
+
+/* 品牌主色：紫色系，保持原有视觉标识 */
+:root,
+.light {
+  --primary: oklch(62.31% 0.188 259.81);
+  --primary-subtle: oklch(62.31% 0.188 259.81 / 10%);
+  --primary-soft: oklch(62.31% 0.188 259.81 / 20%);
+  --primary-muted: oklch(70.86% 0.1652 259.81);
+  --primary-strong: oklch(55.07% 0.1846 259.81);
+  --focus-ring-primary: oklch(62.31% 0.188 259.81 / 30%);
+}
+
+.dark {
+  --primary: oklch(62.31% 0.188 259.81);
+  --primary-subtle: oklch(62.31% 0.188 259.81 / 10%);
+  --primary-soft: oklch(62.31% 0.188 259.81 / 20%);
+  --primary-muted: oklch(70.86% 0.1652 259.81);
+  --primary-strong: oklch(55.07% 0.1846 259.81);
+  --primary-foreground: oklch(1 0 0);
+  --focus-ring-primary: oklch(62.31% 0.188 259.81 / 50%);
+}
+
+body {
+  min-width: 1440px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 工作台背景：品牌渐变光晕 */
+.workspace {
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 78% -8%, var(--primary-soft), transparent 27%),
+    radial-gradient(circle at 20% 105%, oklch(74% 0.12 210 / 12%), transparent 30%),
+    var(--background);
+}
+
+/* 侧边栏玻璃面板 */
+.workspace-sider {
+  width: 248px;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 12px;
+  border-inline-end: 1px solid var(--border);
+  backdrop-filter: blur(22px);
+}
+
+/* 品牌标志 */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 12px 34px;
+  color: var(--foreground-intense);
+  font-size: 17px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+}
+
+.brand-logo {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: white;
+  background: linear-gradient(135deg, #39d8ff 0%, #7665ff 58%, #b766ff 100%);
+  border-radius: 11px;
+}
+
+.service-state {
+  position: absolute;
+  right: 20px;
+  bottom: 24px;
+  font-size: 12px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 5px 0 36px;
+}
+
+.page-header h1 {
+  margin: 0 0 7px;
+  font-size: 30px;
+  font-weight: 760;
+  letter-spacing: -0.045em;
+}
+
+.section-row {
+  margin-top: 18px;
+}
+
+/* 指标卡片左侧渐变竖条 */
+.metric-card {
+  position: relative;
+  min-height: 130px;
+}
+
+.metric-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  content: '';
+  background: linear-gradient(var(--info-emphasis), var(--primary-emphasis, var(--primary)));
+  opacity: 0.9;
+}
+
+.metric-value {
+  font-size: 31px;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+}
+
+.preference-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.schedule-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.schedule-item {
+  display: grid;
+  grid-template-columns: 44px 48px 1fr;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.command-list {
+  display: grid;
+  gap: 8px;
+}
+
+.eyebrow {
+  color: var(--info-emphasis);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.pairing-code {
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.copy-icon {
+  margin-left: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+@media (max-width: 1440px) {
+  .page-header {
+    padding: 30px 44px 56px;
+  }
+}

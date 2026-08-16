@@ -1,0 +1,40 @@
+{
+  "name": "x-assistant",
+  "private": true,
+  "version": "0.3.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node local-hub/bin/dev.js",
+    "dev:web": "vite --config packages/shell/vite.config.js",
+    "dev:hub": "node --watch local-hub/src/main.js",
+    "test": "node --test tests/*.test.js",
+    "test:hub": "node --test tests/local-hub.test.js",
+    "build:hub": "vite build --config packages/shell/vite.config.js",
+    "install:hub": "node local-hub/bin/install-launch-agent.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@appica/icons-react": "^1.0.0",
+    "@appica/ui-react": "^1.1.0",
+    "@codedgar/puppertino": "github:codedgar/Puppertino",
+    "@tanstack/react-table": "^8.21.3",
+    "adm-zip": "^0.5.18",
+    "better-sqlite3": "^13.0.3",
+    "dayjs": "^1.11.21",
+    "echarts": "^6.1.0",
+    "keytar": "^7.9.0",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.2.1"
+  }
+}

@@ -100,15 +100,25 @@ function initializeTweetLengthTabs() {
 }
 
 
-for (const button of document.querySelectorAll('[data-tab]')) {
-  button.addEventListener('click', () => {
-    const tab = button.dataset.tab;
-    for (const item of document.querySelectorAll('[data-tab]')) item.classList.toggle('active', item === button);
-    for (const panel of document.querySelectorAll('[data-tab-panel]')) panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
-    setFloatingQuickReplyVisibility(tab);
-  });
+function activateTab(tab) {
+  for (const button of document.querySelectorAll('[data-tab]')) {
+    const active = button.dataset.tab === tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+  for (const panel of document.querySelectorAll('[data-tab-panel]')) {
+    panel.classList.toggle('hidden', panel.dataset.tabPanel !== tab);
+  }
+  setFloatingQuickReplyVisibility(tab);
 }
-setFloatingQuickReplyVisibility('ideas');
+for (const button of document.querySelectorAll('[data-tab]')) {
+  button.addEventListener('click', () => activateTab(button.dataset.tab));
+  button.addEventListener('touchend', (event) => {
+    event.preventDefault();
+    activateTab(button.dataset.tab);
+  }, { passive: false });
+}
+activateTab('reply');
 
 function setFloatingQuickReplyVisibility(tab) {
   $('#floatingQuickReplyButton').classList.toggle('hidden', tab !== 'reply');

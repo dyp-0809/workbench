@@ -161,23 +161,29 @@ test('推荐草稿按字数上限收紧并移除终止标点', () => {
   assert.deepEqual(result.recommendations, ['这是第一条推荐', '这是第二条推荐', '这是第三条推荐']);
   assert.equal(result.contentLengthLimit, 20);
 });
-test('推文优化默认八十字，支持用户收紧字数并保持自然口吻', () => {
-  const prompt = engine.buildTweetOptimizationPrompt('中文');
+test('推文二创仅保留一条个人推文，并要求独立表达', () => {
+  const prompt = engine.buildTweetOptimizationPrompt('English', 80, '轻松幽默');
   const result = engine.normalizeTweetOptimization({
-    posts: ['真正的瓶颈不在模型能力，而在知识维护。', '这是一个超过二十个字符的推文优化结果，需要被安全地截断并保留省略号。']
+    posts: ['真正的瓶颈不在模型能力，而在知识维护。', '这是一条不应保留的第二候选。'],
+    valueAdded: '把模型能力与知识维护的关系从绝对判断改为瓶颈判断。',
+    readerBenefit: '帮助读者识别 AI 落地中被忽略的维护成本。',
+    risk: '需要补充具体场景，避免被理解为普遍结论。',
+    translation: '真正的瓶颈不只在模型能力，而在知识维护'
   }, { contentLengthLimit: 20 });
 
-  assert.match(prompt, /不超过 80 个字符/);
-  assert.match(prompt, /结尾不使用句号、问号或感叹号/);
-  assert.deepEqual(result.posts, ['真正的瓶颈不在模型能力，而在知识维护', '这是一个超过二十个字符的推文优化结果，…']);
+  assert.match(prompt, /原始推文和高赞回复都是参考素材/);
+  assert.match(prompt, /不得复述、同义改写、拼接或概括/);
+  assert.match(prompt, /只生成 1 条推文/);
+  assert.match(prompt, /采用“轻松幽默”风格/);
+  assert.match(prompt, /previousDrafts 是用户已拒绝的本轮版本/);
+  assert.match(prompt, /valueAdded 要说明相较参考素材新增的具体判断/);
+  assert.match(prompt, /translation 必须返回这条推文的中文对照/);
+  assert.deepEqual(result.posts, ['真正的瓶颈不在模型能力，而在知识维护']);
   assert.equal(result.contentLengthLimit, 20);
-});
-test('推文优化每两句话以空行分段', () => {
-  const result = engine.normalizeTweetOptimization({
-    posts: ['第一句。第二句。第三句。第四句。']
-  });
-
-  assert.deepEqual(result.posts, ['第一句。第二句。\n\n第三句。第四句']);
+  assert.equal(result.translation, '真正的瓶颈不只在模型能力，而在知识维护');
+  assert.equal(result.valueAdded, '把模型能力与知识维护的关系从绝对判断改为瓶颈判断。');
+  assert.equal(result.readerBenefit, '帮助读者识别 AI 落地中被忽略的维护成本。');
+  assert.equal(result.risk, '需要补充具体场景，避免被理解为普遍结论。');
 });
 test('主题推文围绕讨论激烈议题并保留美股安全边界', () => {
   const prompt = engine.buildTweetRecommendationsPrompt({

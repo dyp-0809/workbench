@@ -1,5 +1,6 @@
 const { languageNames, humanToneNames, humanToneDescriptions, detectReplyLanguage, ideaTypeNames, contentFormatNames, replyActionNames, originalityLevelNames, normalizeContentLengthLimit, normalizeTweetLengthLimit, buildReplyPrompt, normalizeReplyResult, buildTweetOptimizationPrompt, normalizeTweetOptimization, buildContributionSuggestionsPrompt, normalizeContributionSuggestions, buildOriginalContentPrompt, normalizeOriginalContent, buildTweetRecommendationsPrompt, normalizeTweetRecommendations } = XReplyCopilotIdeaEngine;
 const styleNames = { insightful: '补充观点', practical: '实操建议', question: '提问式', concise: '极简回应', professional: '专业分析', friendly: '友好支持', contrarian: '温和反驳', witty: '轻松幽默', sarcastic: '讽刺' };
+const TWEET_STYLE_KEYS = Object.freeze(['insightful', 'witty', 'practical', 'friendly', 'concise', 'professional', 'question', 'contrarian', 'sarcastic']);
 const DEEPSEEK_API = 'https://api.deepseek.com';
 const $ = (selector) => document.querySelector(selector);
 
@@ -7,12 +8,15 @@ let currentIdeaType = 'all';
 let currentTweetTopic = 'life';
 let lastRecommendationInput = null;
 const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投资者；关注 AI、软件工程、创作和长期投资，只写真实观察与可验证判断';
+let tweetGenerationContext = '';
+let previousTweetDrafts = [];
 const CONTENT_PROFILE_STORAGE_KEY = 'contentProfile';
 
 $('#ideaLanguageSelect').value = 'zh';
 $('#contentProfileInput').value = localStorage.getItem(CONTENT_PROFILE_STORAGE_KEY) || '';
 initializeChoiceTags();
 initializeHumanToneControl();
+initializeTweetStyleControl();
 initializeTweetLengthTabs();
 
 function initializeChoiceTags() {
@@ -55,6 +59,21 @@ function initializeHumanToneControl() {
 
   const update = () => {
     const label = `${humanToneNames[range.value]} · ${range.value}/5`;
+    output.textContent = label;
+    range.setAttribute('aria-valuetext', label);
+  };
+  range.addEventListener('input', update);
+  update();
+}
+function getTweetStyle() {
+  return TWEET_STYLE_KEYS[Number($('#tweetStyleRange').value) - 1] ?? TWEET_STYLE_KEYS[0];
+}
+function initializeTweetStyleControl() {
+  const range = $('#tweetStyleRange');
+  const output = $('#tweetStyleValue');
+  const update = () => {
+    const style = getTweetStyle();
+    const label = `${styleNames[style]} · ${range.value}/9`;
     output.textContent = label;
     range.setAttribute('aria-valuetext', label);
   };
@@ -524,12 +543,19 @@ async function generateIdeas() {
 }
 async function generateTweetOptimization(inputOverride = null) {
   const button = $('#optimizeTweetButton');
-  const idea = (inputOverride?.idea ?? $('#tweetIdeaInput').value).trim();
+  const sourceTweet = (inputOverride?.sourceTweet ?? $('#tweetIdeaInput').value).trim();
+  const topReplies = (inputOverride?.topReplies ?? $('#tweetTopRepliesInput').value).trim();
   const feedback = inputOverride?.feedback ?? $('#tweetFeedbackInput').value.trim();
   const language = $('#tweetLanguageSelect').value || 'zh';
-  if (!idea) {
-    showError('请先输入一个推文想法。');
-    showToast('请先输入一个推文想法', 'error');
+  const tweetStyle = getTweetStyle();
+  const generationContext = JSON.stringify({ sourceTweet, topReplies, feedback, language, tweetStyle, contentLengthLimit: $('#tweetLengthLimit').value });
+  if (generationContext !== tweetGenerationContext) {
+    tweetGenerationContext = generationContext;
+    previousTweetDrafts = [];
+  }
+  if (!sourceTweet) {
+    showError('请先粘贴原始推文。');
+    showToast('请先粘贴原始推文', 'error');
     $('#tweetIdeaInput').focus();
     return;
   }
@@ -538,24 +564,28 @@ async function generateTweetOptimization(inputOverride = null) {
   setLoading(button, true, '生成中…');
   setTweetLoading(true);
   showError('');
-  showToast('正在优化推文…', 'loading');
+  showToast('正在生成个人推文…', 'loading');
   try {
     const settings = getSettings();
     const result = normalizeTweetOptimization(await requestModel(settings, {
-      idea,
+      sourceTweet,
+      topReplies,
       feedback,
+      style: styleNames[tweetStyle],
+      previousDrafts: previousTweetDrafts,
       language: languageNames[language],
       contentLengthLimit
-    }, buildTweetOptimizationPrompt(languageNames[language], contentLengthLimit)), { contentLengthLimit });
+    }, buildTweetOptimizationPrompt(languageNames[language], contentLengthLimit, styleNames[tweetStyle])), { contentLengthLimit });
     if (!result.posts.length) throw new Error('模型没有返回可用文案。');
-    renderTweetOptimization(result, language);
-    showToast('已生成 3 个版本', 'success');
+    renderTweetOptimization(result, language, true);
+    previousTweetDrafts = [...previousTweetDrafts, ...result.posts];
+    showToast('已生成个人推文', 'success');
   } catch (error) {
     showError(error.message);
-    showToast('推文优化失败，请查看下方错误信息', 'error');
+    showToast('个人推文生成失败，请查看下方错误信息', 'error');
   } finally {
     setTweetLoading(false);
-    setLoading(button, false, '生成优化文案');
+    setLoading(button, false, '生成个人推文');
   }
 }
 
@@ -565,9 +595,11 @@ async function rewriteClipboardTweet() {
   try {
     const text = await readClipboardText();
     $('#tweetIdeaInput').value = text;
+    $('#tweetTopRepliesInput').value = '';
     $('#tweetFeedbackInput').value = '';
-    showToast('已回显粘贴板内容，正在生成 3 个版本', 'success');
-    await generateTweetOptimization({ idea: text, feedback: '' });
+    showToast('已回显原始推文，可选补充高赞回复', 'success');
+    tweetGenerationContext = '';
+    previousTweetDrafts = [];
   } catch (error) {
     showError(error.message || '读取粘贴板失败，请在输入框中使用系统“粘贴”。');
     showToast('一键二创失败', 'error');
@@ -577,9 +609,13 @@ async function rewriteClipboardTweet() {
 }
 function clearTweetIdea() {
   $('#tweetIdeaInput').value = '';
+  $('#tweetTopRepliesInput').value = '';
+  $('#tweetFeedbackInput').value = '';
   showError('');
   $('#tweetIdeaInput').focus();
-  showToast('推文想法已清空', 'success');
+  showToast('二创素材已清空', 'success');
+  tweetGenerationContext = '';
+  previousTweetDrafts = [];
 }
 async function generateTopicTweets() {
   const button = $('#generateTopicTweetsButton');
@@ -622,9 +658,14 @@ function setTweetLoading(loading) {
   $('#tweetDraftList').classList.toggle('hidden', loading);
 }
 
-function renderTweetOptimization(result, language) {
+function renderTweetOptimization(result, language, showChineseTranslation = false) {
   $('#tweetMode').textContent = `DeepSeek · ${languageNames[language]}`;
-  $('#tweetStrategy').replaceChildren(makeTweetLine('优化策略', result.strategy || '围绕具体观察和清晰表达优化。'));
+  $('#tweetStrategy').replaceChildren(
+    makeTweetLine('二创思路', result.strategy || '提炼原帖与高赞回复中的有效观点，写出独立判断。'),
+    makeTweetLine('新增价值', result.valueAdded || '未返回，请人工确认这条推文是否提供了原帖之外的新判断。'),
+    makeTweetLine('读者收获', result.readerBenefit || '未返回，请人工确认目标读者能获得的具体价值。'),
+    ...(result.risk ? [makeTweetLine('风险提示', result.risk)] : [])
+  );
   const list = $('#tweetDraftList');
   list.replaceChildren();
   result.posts.forEach((post, index) => {
@@ -644,13 +685,25 @@ function renderTweetOptimization(result, language) {
     const refine = document.createElement('button');
     refine.className = 'secondary-button';
     refine.type = 'button';
-    refine.textContent = '生成三个版本';
-    refine.addEventListener('click', async () => {
+    refine.textContent = '基于此再创作';
+    refine.addEventListener('click', () => {
       $('#tweetIdeaInput').value = post;
+      $('#tweetTopRepliesInput').value = '';
       $('#tweetFeedbackInput').value = '';
-      await generateTweetOptimization({ idea: post, feedback: '' });
+      showToast('可选补充高赞回复后再次生成', 'loading');
     });
-    card.append(text, copy, refine);
+    card.append(text);
+    if (showChineseTranslation && language !== 'zh') {
+      if (result.translation) {
+        card.append(makeTweetLine('中文对照', result.translation));
+      } else {
+        const warning = document.createElement('div');
+        warning.className = 'translation-warning';
+        warning.textContent = '中文对照暂未返回，可再次生成。';
+        card.append(warning);
+      }
+    }
+    card.append(copy, refine);
     list.append(card);
   });
 }

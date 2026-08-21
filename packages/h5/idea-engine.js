@@ -180,22 +180,22 @@
 请使用${language}生成所有面向用户的字段和草稿。回复风格为“${style}”。当目标语言不是中文时，额外返回与 drafts 逐条对应的中文译文；中文时 translations 返回空数组。
 只输出 JSON：{"shouldReply":boolean,"recommendedAction":"reply|original|thread|skip","actionReason":string,"reason":string,"risk":string,"angle":string,"drafts":string[],"translations":string[]}`;
   }
-  function buildTweetOptimizationPrompt(language, contentLengthLimit = DEFAULT_TWEET_LENGTH_LIMIT) {
+  function buildTweetOptimizationPrompt(language, contentLengthLimit = DEFAULT_TWEET_LENGTH_LIMIT, style = '补充观点') {
     const limit = normalizeTweetLengthLimit(contentLengthLimit);
-    return `你是 X 推文优化助手。用户会给你一个粗略想法，你要把它改成具有传播潜力、但不承诺一定高流量的自然推文。
+    return `你是 X 推文二创助手。用户会提供原始推文、高赞回复、可选补充观点和本轮已拒绝版本；你要据此生成一条可由用户本人发布的个人推文。
 写作目标：
-1. 保留用户真实想表达的核心，不凭空增加经历、数据、地点、人物或事实。
-2. 开头尽快出现具体观察、反差、画面或可感知细节，避免“今天分享一个…”“大家好”。
-3. 每条文案只表达一个核心判断；短段落适合手机阅读，避免标题腔、鸡汤腔、营销腔和术语堆砌。
-4. 让读者有理由停留或回应：可以留下具体问题、未解决的张力或可共鸣的观察，但不要用“大家怎么看”强行索取互动。
-5. 默认不堆标签、表情、链接和行动号召；除非用户明确要求。
-6. 输出 3 条角度明显不同的候选：具体画面型、观点反差型、轻对话型。不要只替换同义词。
-7. 用户提供修改意见时，优先满足意见，同时保留具体、真实、可读和克制的原则。
-8. 涉及医疗、法律、投资、政治或天气等事实时，不得把不确定信息写成确定性结论；天气只能基于用户提供的内容。
-9. 默认自然口语，避免公文腔、客服腔、总结腔、AI 套话和金句腔；不用错别字伪造人味，未被系统截断时结尾不使用句号、问号或感叹号。
-10. 每条候选不超过 ${limit} 个字符；超出时保留核心表达并自行收紧。
-11. 每两句话组成一个段落，段落之间空一行；不足两句时保持自然完整，不要为了凑句数补写内容。
-请使用${language}输出。只输出 JSON：{"posts":string[],"strategy":string,"translation":string}`;
+1. 输入中的原始推文和高赞回复都是参考素材，不是用户的原话或经历。提炼其中可用的观点、张力或反例，再形成独立的个人判断。
+2. 必须二创，不得复述、同义改写、拼接或概括原始推文和任一高赞回复；不能只把多条回复压缩成摘要。
+3. 只生成 1 条推文。它要有清晰的独立观点，开头尽快出现具体观察、反差或判断，避免“今天分享一个…”“大家好”。
+4. 不得凭空增加用户经历、数据、地点、人物或事实；没有用户明确提供的经历时，不要声称“我经历过”“我看到过”。用户的补充观点优先，但也不得超出其表达。
+5. 每条文案只表达一个核心判断；短段落适合手机阅读，避免标题腔、鸡汤腔、营销腔和术语堆砌。
+6. 默认不堆标签、表情、链接和行动号召；不使用“大家怎么看”强行索取互动。
+7. 涉及医疗、法律、投资、政治或天气等事实时，不得把不确定信息写成确定性结论；天气只能基于用户提供的内容。
+8. 采用“${style}”风格，但仍须保持自然、克制、可读；避免公文腔、客服腔、总结腔、AI 套话和金句腔。不用错别字伪造人味，未被系统截断时结尾不使用句号、问号或感叹号。
+9. 推文不超过 ${limit} 个字符；超出时保留核心表达并自行收紧。每两句话组成一个段落，段落之间空一行；不足两句时保持自然完整，不要为了凑句数补写内容。
+10. previousDrafts 是用户已拒绝的本轮版本。它非空时，不得复用其中的开头、核心角度、论证结构或结论措辞；新版本必须至少改变判断、适用边界、反例或方法中的一项。
+11. valueAdded 要说明相较参考素材新增的具体判断、边界、反例或方法；readerBenefit 要说明读者能获得的具体收获；risk 要如实提示事实不足、重复、语气或敏感性风险，无风险时返回空字符串。
+请使用${language}输出。目标语言不是中文时，translation 必须返回这条推文的中文对照；中文时 translation 返回空字符串。只输出 JSON：{"posts":string[],"strategy":string,"valueAdded":string,"readerBenefit":string,"risk":string,"translation":string}`;
   }
 
   function normalizeTweetOptimization(result, options = {}) {
@@ -206,11 +206,14 @@
         .filter((post) => typeof post === 'string' && post.trim())
         .map((post) => constrainOriginalContent(formatTweetParagraphs(removeTerminalPunctuation(post)), contentLengthLimit).content)
         .filter(Boolean)
-        .slice(0, 3)
+        .slice(0, 1)
       : [];
     return {
       posts,
       strategy: String(value.strategy || '').trim(),
+      valueAdded: String(value.valueAdded || '').trim(),
+      readerBenefit: String(value.readerBenefit || '').trim(),
+      risk: String(value.risk || '').trim(),
       translation: String(value.translation || '').trim(),
       contentLengthLimit
     };

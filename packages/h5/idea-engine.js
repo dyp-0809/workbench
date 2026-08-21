@@ -35,7 +35,7 @@
   const DEFAULT_CONTENT_LENGTH_LIMIT = 100;
   const MIN_CONTENT_LENGTH_LIMIT = 20;
   const MAX_CONTENT_LENGTH_LIMIT = 2000;
-  const DEFAULT_TWEET_LENGTH_LIMIT = 80;
+  const DEFAULT_TWEET_LENGTH_LIMIT = 100;
   function normalizeTweetLengthLimit(value) {
     if (value === undefined || value === null || value === '') return DEFAULT_TWEET_LENGTH_LIMIT;
     return normalizeContentLengthLimit(value);

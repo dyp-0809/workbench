@@ -161,7 +161,8 @@ test('推荐草稿按字数上限收紧并移除终止标点', () => {
   assert.deepEqual(result.recommendations, ['这是第一条推荐', '这是第二条推荐', '这是第三条推荐']);
   assert.equal(result.contentLengthLimit, 20);
 });
-test('推文二创仅保留一条个人推文，并要求独立表达', () => {
+test('推文二创默认一百字，并仅保留一条个人推文', () => {
+  const defaultPrompt = engine.buildTweetOptimizationPrompt('中文');
   const prompt = engine.buildTweetOptimizationPrompt('English', 80, '轻松幽默');
   const result = engine.normalizeTweetOptimization({
     posts: ['真正的瓶颈不在模型能力，而在知识维护。', '这是一条不应保留的第二候选。'],
@@ -178,6 +179,7 @@ test('推文二创仅保留一条个人推文，并要求独立表达', () => {
   assert.match(prompt, /previousDrafts 是用户已拒绝的本轮版本/);
   assert.match(prompt, /valueAdded 要说明相较参考素材新增的具体判断/);
   assert.match(prompt, /translation 必须返回这条推文的中文对照/);
+  assert.match(defaultPrompt, /不超过 100 个字符/);
   assert.deepEqual(result.posts, ['真正的瓶颈不在模型能力，而在知识维护']);
   assert.equal(result.contentLengthLimit, 20);
   assert.equal(result.translation, '真正的瓶颈不只在模型能力，而在知识维护');

@@ -7,7 +7,7 @@ import { Card } from '@appica/ui-react/card';
 import { Badge } from '@appica/ui-react/badge';
 import { Field, FieldLabel } from '@appica/ui-react/field';
 import { LayoutGrid, FileText, Message, Database, Plus } from '@appica/icons-react';
-import { SectionCard, Empty, DescriptionList, Metric, api } from '@x-assistant/core';
+import { SectionCard, Empty, DescriptionList, Metric, api } from '@personal-workbench/core';
 import { ContentTable } from './ContentTable.jsx';
 
 function XOverviewPage({ dashboard, candidateEvent }) {

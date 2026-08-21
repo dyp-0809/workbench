@@ -11,10 +11,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      '@x-assistant/core': path.resolve(root, '../core/src/index.js'),
-      '@x-assistant/module-tasks': path.resolve(root, '../module-tasks/src/index.js'),
-      '@x-assistant/module-expiring': path.resolve(root, '../module-expiring/src/index.js'),
-      '@x-assistant/module-x': path.resolve(root, '../module-x/src/index.js')
+      '@personal-workbench/core': path.resolve(root, '../core/src/index.js'),
+      '@personal-workbench/module-tasks': path.resolve(root, '../module-tasks/src/index.js'),
+      '@personal-workbench/module-expiring': path.resolve(root, '../module-expiring/src/index.js'),
+      '@personal-workbench/module-x': path.resolve(root, '../module-x/src/index.js'),
+      '@personal-workbench/module-stock': path.resolve(root, '../module-stock/src/index.js')
     }
   },
   server: {

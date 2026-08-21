@@ -4,7 +4,7 @@ import { Badge } from '@appica/ui-react/badge';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@appica/ui-react/table';
 import { Pagination, PaginationList, PaginationItem, PaginationLink } from '@appica/ui-react/pagination';
 import { ChevronLeft, ChevronRight } from '@appica/icons-react';
-import { Empty } from '@x-assistant/core';
+import { Empty } from '@personal-workbench/core';
 
 function ContentTable({ packs, onEvent }) {
   const [page, setPage] = useState(1);

@@ -1,5 +1,5 @@
 {
-  "name": "@x-assistant/module-expiring",
+  "name": "@personal-workbench/module-expiring",
   "private": true,
   "version": "0.3.0",
   "type": "module",

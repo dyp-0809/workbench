@@ -10,9 +10,22 @@ import { Badge } from '@appica/ui-react/badge';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogFooter, AlertDialogClose } from '@appica/ui-react/alert-dialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, DialogClose } from '@appica/ui-react/dialog';
 import { Plus } from '@appica/icons-react';
+import { Progress } from '@appica/ui-react/progress';
 import dayjs from 'dayjs';
-import { api, SectionCard, Empty, LoadingButton } from '@x-assistant/core';
+import { api, SectionCard, Empty, LoadingButton } from '@personal-workbench/core';
 
+function dueStatus(task) {
+  if (!task.dueDate) return null;
+  const start = new Date(task.createdAt).getTime();
+  const end = new Date(`${task.dueDate}T23:59:59`).getTime();
+  const nowTime = Date.now();
+  const total = end - start;
+  if (!Number.isFinite(total) || total <= 0) return { progress: 100, label: task.dueDate };
+  const progress = Math.min(100, Math.max(0, Math.round(((nowTime - start) / total) * 100)));
+  const daysLeft = Math.ceil((end - nowTime) / 86400000);
+  const label = daysLeft > 0 ? `剩 ${daysLeft} 天` : daysLeft === 0 ? '今天到期' : `已逾期 ${-daysLeft} 天`;
+  return { progress, label };
+}
 function TaskPage() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -49,7 +62,19 @@ function TaskPage() {
               <TableRow key={task.id}>
                 <TableCell className="font-medium">{task.title}</TableCell>
                 <TableCell>{task.category ? <Badge variant="outline">{task.category}</Badge> : null}</TableCell>
-                <TableCell>{task.dueDate || '未安排'}</TableCell>
+                <TableCell>
+                  {(() => {
+                    const due = dueStatus(task);
+                    if (!due) return '未安排';
+                    return (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-sm">{task.dueDate}</span>
+                        <span className="text-xs text-foreground-muted">{due.label}</span>
+                        <Progress value={due.progress} thickness={4} className="w-28" aria-label={due.label} />
+                      </div>
+                    );
+                  })()}
+                </TableCell>
                 <TableCell>
                   <div className="flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => update(task.id, task.status === 'open' ? 'completed' : 'open')}>{task.status === 'open' ? '完成' : '重新打开'}</Button>
@@ -84,16 +109,16 @@ function TaskPage() {
               <Input required value={input.title} onChange={(event) => setInput({ ...input, title: event.target.value })} />
             </Field>
             <Field>
-              <FieldLabel>备注</FieldLabel>
-              <Textarea rows={3} value={input.notes} onChange={(event) => setInput({ ...input, notes: event.target.value })} />
-            </Field>
-            <Field>
               <FieldLabel>分类</FieldLabel>
               <Input value={input.category} onChange={(event) => setInput({ ...input, category: event.target.value })} />
             </Field>
             <Field>
               <FieldLabel>截止日期</FieldLabel>
               <DatePicker value={input.dueDate ? dayjs(input.dueDate).toDate() : undefined} onValueChange={(date) => setInput({ ...input, dueDate: date ? dayjs(date).format('YYYY-MM-DD') : '' })} />
+            </Field>
+            <Field>
+              <FieldLabel>备注</FieldLabel>
+              <Textarea rows={3} value={input.notes} onChange={(event) => setInput({ ...input, notes: event.target.value })} />
             </Field>
           </DialogBody>
           <DialogFooter>

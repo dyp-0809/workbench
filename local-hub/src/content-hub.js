@@ -105,6 +105,12 @@ function migrateExpiringItems(db) {
     db.exec('ALTER TABLE expiring_items ADD COLUMN reminded_at TEXT');
   }
 }
+function migrateStockPositions(db) {
+  const columns = db.prepare('PRAGMA table_info(stock_positions)').all().map((column) => column.name);
+  if (!columns.includes('target_percent')) {
+    db.exec('ALTER TABLE stock_positions ADD COLUMN target_percent REAL');
+  }
+}
 
 
 function initializeSchema(db) {
@@ -249,8 +255,27 @@ function initializeSchema(db) {
       sample_tweets TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS stock_positions (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
+      quantity REAL NOT NULL,
+      cost_price REAL NOT NULL,
+      current_price REAL NOT NULL,
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      target_percent REAL
+    );
+    CREATE TABLE IF NOT EXISTS stock_settings (
+      id TEXT PRIMARY KEY,
+      total_assets REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   migrateExpiringItems(db);
+  migrateStockPositions(db);
 }
 function createContentHub(options = {}) {
   const now = options.now || (() => new Date());
@@ -382,6 +407,83 @@ function createContentHub(options = {}) {
     return db.prepare('DELETE FROM personal_tasks WHERE id = ?').run(id).changes > 0;
   }
 
+  function normalizeStockNumber(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`${label}必须是数字。`);
+    return number;
+  }
+
+  function normalizeTargetPercent(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const number = normalizeStockNumber(value, '目标仓位');
+    if (number < 0 || number > 100) throw new Error('目标仓位必须在 0 到 100 之间。');
+    return number;
+  }
+
+  function mapStockPosition(row) {
+    return { id: row.id, symbol: row.symbol, name: row.name, market: row.market, quantity: row.quantity, costPrice: row.cost_price, currentPrice: row.current_price, targetPercent: row.target_percent, notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+
+  function listStockPositions() {
+    return db.prepare('SELECT * FROM stock_positions ORDER BY created_at').all().map(mapStockPosition);
+  }
+
+  function createStockPosition(input) {
+    const symbol = String(input.symbol || '').trim();
+    const name = String(input.name || '').trim();
+    const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
+    if (!symbol) throw new Error('股票代码不能为空。');
+    if (!name) throw new Error('股票名称不能为空。');
+    if (!market) throw new Error('市场必须是 US、HK 或 CN。');
+    const quantity = normalizeStockNumber(input.quantity, '持仓数量');
+    const costPrice = normalizeStockNumber(input.costPrice, '成本价');
+    const currentPrice = normalizeStockNumber(input.currentPrice, '现价');
+    if (quantity <= 0) throw new Error('持仓数量必须大于 0。');
+    if (costPrice < 0 || currentPrice < 0) throw new Error('价格不能为负数。');
+    const targetPercent = normalizeTargetPercent(input.targetPercent);
+    const timestamp = asIso(undefined, now());
+    const position = { id: createId(), symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp };
+    db.prepare('INSERT INTO stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp);
+    return position;
+  }
+
+  function updateStockPosition(id, input) {
+    const existing = db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id);
+    if (!existing) return null;
+    const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? input.symbol.trim() : existing.symbol;
+    const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
+    const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : existing.market;
+    const quantity = input.quantity === undefined ? existing.quantity : normalizeStockNumber(input.quantity, '持仓数量');
+    const costPrice = input.costPrice === undefined ? existing.cost_price : normalizeStockNumber(input.costPrice, '成本价');
+    const currentPrice = input.currentPrice === undefined ? existing.current_price : normalizeStockNumber(input.currentPrice, '现价');
+    if (quantity <= 0) throw new Error('持仓数量必须大于 0。');
+    if (costPrice < 0 || currentPrice < 0) throw new Error('价格不能为负数。');
+    const notes = typeof input.notes === 'string' ? input.notes.trim() : existing.notes;
+    const targetPercent = input.targetPercent === undefined ? existing.target_percent : normalizeTargetPercent(input.targetPercent);
+    const timestamp = asIso(undefined, now());
+    db.prepare('UPDATE stock_positions SET symbol = ?, name = ?, market = ?, quantity = ?, cost_price = ?, current_price = ?, target_percent = ?, notes = ?, updated_at = ? WHERE id = ?')
+      .run(symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes, timestamp, id);
+    return mapStockPosition(db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id));
+  }
+
+  function deleteStockPosition(id) {
+    return db.prepare('DELETE FROM stock_positions WHERE id = ?').run(id).changes > 0;
+  }
+
+  function getStockSettings() {
+    const row = db.prepare("SELECT * FROM stock_settings WHERE id = 'default'").get();
+    return { totalAssets: row ? row.total_assets : 0 };
+  }
+
+  function setStockSettings(input) {
+    const totalAssets = Number(input.totalAssets);
+    if (!Number.isFinite(totalAssets) || totalAssets < 0) throw new Error('总资产必须是非负数字。');
+    const timestamp = asIso(undefined, now());
+    db.prepare("INSERT INTO stock_settings(id, total_assets, updated_at) VALUES ('default', ?, ?) ON CONFLICT(id) DO UPDATE SET total_assets = excluded.total_assets, updated_at = excluded.updated_at").run(totalAssets, timestamp);
+    return { totalAssets };
+  }
+
   function reminderStatus(item, currentTime = expiringNow || now()) {
     if (!item.enabled) return 'disabled';
     if (item.mode === 'once' && item.remindedAt) return 'notified';
@@ -432,6 +534,7 @@ function createContentHub(options = {}) {
     if (!current) return null;
     const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name;
     const notes = typeof input.notes === 'string' ? input.notes.trim() : current.notes;
+    const category = typeof input.category === 'string' ? input.category.trim() : current.category;
     const dueAt = input.dueAt ? String(input.dueAt) : (input.dueDate ? `${input.dueDate}T00:00:00.000Z` : (current.due_at || `${current.due_date}T00:00:00.000Z`));
     if (!Number.isFinite(new Date(dueAt).getTime())) throw new Error('到期时间无效。');
     const enabled = typeof input.enabled === 'boolean' ? input.enabled : Boolean(current.enabled);
@@ -457,7 +560,7 @@ function createContentHub(options = {}) {
       nextAt = settled.nextAt;
     }
     const reschedules = input.mode !== undefined || input.intervalValue !== undefined || Boolean(input.dueAt || input.dueDate || input.advanceUnit || input.intervalUnit) || input.advanceValue !== undefined;
-    db.prepare('UPDATE expiring_items SET name = ?, due_date = ?, due_at = ?, advance_value = ?, advance_unit = ?, mode = ?, interval_value = ?, interval_unit = ?, next_at = ?, notes = ?, enabled = ?, reminded_at = ?, updated_at = ? WHERE id = ?').run(name, effectiveDueAt.slice(0, 10), effectiveDueAt, advanceValue, advanceUnit, mode, intervalValue, intervalUnit, nextAt, notes, Number(enabled), reschedules ? null : current.reminded_at, updatedAt, id);
+    db.prepare('UPDATE expiring_items SET name = ?, category = ?, due_date = ?, due_at = ?, advance_value = ?, advance_unit = ?, mode = ?, interval_value = ?, interval_unit = ?, next_at = ?, notes = ?, enabled = ?, reminded_at = ?, updated_at = ? WHERE id = ?').run(name, category, effectiveDueAt.slice(0, 10), effectiveDueAt, advanceValue, advanceUnit, mode, intervalValue, intervalUnit, nextAt, notes, Number(enabled), reschedules ? null : current.reminded_at, updatedAt, id);
     return mapExpiringItem(db.prepare('SELECT * FROM expiring_items WHERE id = ?').get(id));
   }
 
@@ -1029,6 +1132,16 @@ function createContentHub(options = {}) {
         return task ? sendJson(response, 200, { task }) : sendJson(response, 404, { error: '待办不存在。' });
       }
       if (taskMatch && request.method === 'DELETE') return deleteTask(taskMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '待办不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/stock-positions') return sendJson(response, 200, { positions: listStockPositions() });
+      if (request.method === 'POST' && pathname === '/v1/stock-positions') return sendJson(response, 201, { position: createStockPosition(await parseRequest(request)) });
+      const stockPositionMatch = pathname.match(/^\/v1\/stock-positions\/([^/]+)$/);
+      if (stockPositionMatch && request.method === 'PATCH') {
+        const position = updateStockPosition(stockPositionMatch[1], await parseRequest(request));
+        return position ? sendJson(response, 200, { position }) : sendJson(response, 404, { error: '持仓不存在。' });
+      }
+      if (stockPositionMatch && request.method === 'DELETE') return deleteStockPosition(stockPositionMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '持仓不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: getStockSettings() });
+      if (request.method === 'PUT' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: setStockSettings(await parseRequest(request)) });
       if (request.method === 'PUT' && pathname === '/v1/profile') return sendJson(response, 200, { profile: setProfile(await parseRequest(request)) });
       if (request.method === 'GET' && pathname === '/v1/materials') return sendJson(response, 200, { materials: listMaterials() });
       if (request.method === 'POST' && pathname === '/v1/materials') return sendJson(response, 201, { material: createMaterial(await parseRequest(request)) });

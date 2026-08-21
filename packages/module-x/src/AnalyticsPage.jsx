@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@appica/ui-react/select';
 import { Bolt, FileText } from '@appica/icons-react';
 import dayjs from 'dayjs';
-import { SectionCard, Empty, Metric, Chart, donutOption } from '@x-assistant/core';
+import { SectionCard, Empty, Metric, Chart, donutOption } from '@personal-workbench/core';
 
 function AnalyticsPage({ packs, tasks, expiringItems }) {
   const [days, setDays] = useState(30);

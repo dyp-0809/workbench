@@ -1,5 +1,5 @@
 {
-  "name": "@personal-workbench/core",
+  "name": "@personal-workbench/module-stock",
   "private": true,
   "version": "0.3.0",
   "type": "module",

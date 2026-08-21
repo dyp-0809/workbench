@@ -1,5 +1,5 @@
 {
-  "name": "@x-assistant/shell",
+  "name": "@personal-workbench/shell",
   "private": true,
   "version": "0.3.0",
   "type": "module"

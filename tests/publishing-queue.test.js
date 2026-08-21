@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-require('../publishing-queue.js');
+require('../packages/chrome-extension/publishing-queue.js');
 
 const queue = globalThis.XPublishingQueue;
 

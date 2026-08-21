@@ -15,17 +15,19 @@ import { Field, FieldLabel } from '@appica/ui-react/field';
 import { Navigation, NavigationList, NavigationItem, NavigationLink } from '@appica/ui-react/navigation';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@appica/ui-react/collapsible';
 import { ToastProvider, Toaster, useToastManager } from '@appica/ui-react/toast';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, DialogClose } from '@appica/ui-react/dialog';
 
 // Appica Icons
-import { LayoutGrid, LayoutDashboard, Book, FileText, Database, Settings, Bolt, ChevronRight, CircleCheckFilled, CircleXFilled, Copy } from '@appica/icons-react';
+import { LayoutGrid, LayoutDashboard, Book, FileText, Database, Settings, Bolt, ChevronRight, CircleCheckFilled, CircleXFilled, Copy, ChartBar } from '@appica/icons-react';
 
 // Core 共享能力
-import { api, formatBytes, Chart, donutOption, Empty, SectionCard, DescriptionList, Metric, PasswordInput, LoadingButton } from '@x-assistant/core';
+import { api, formatBytes, Chart, donutOption, Empty, SectionCard, DescriptionList, Metric, PasswordInput, LoadingButton } from '@personal-workbench/core';
 
 // 业务模块
-import { TaskPage } from '@x-assistant/module-tasks';
-import { ExpiringItemsPage } from '@x-assistant/module-expiring';
-import { XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, AnalyticsPage } from '@x-assistant/module-x';
+import { TaskPage } from '@personal-workbench/module-tasks';
+import { ExpiringItemsPage } from '@personal-workbench/module-expiring';
+import { XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, AnalyticsPage } from '@personal-workbench/module-x';
+import { StockStatsPage, StockPositionsPage } from '@personal-workbench/module-stock';
 
 const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const navigationGroups = [
@@ -34,13 +36,17 @@ const navigationGroups = [
     { key: 'tasks', label: '待办事项', Icon: FileText },
     { key: 'expiring', label: '到期与提醒', Icon: Database }
   ] },
-  { label: 'X ASSISTANT', icon: LayoutGrid, items: [
+  { id: 'x', label: 'X ASSISTANT', icon: LayoutGrid, items: [
     { key: 'x-overview', label: 'X 概览', Icon: LayoutDashboard },
     { key: 'library', label: '内容库', Icon: Book },
     { key: 'materials', label: '素材库', Icon: FileText },
     { key: 'replies', label: '回复历史', Icon: FileText },
     { key: 'style', label: '个人风格', Icon: LayoutGrid },
     { key: 'analytics-v2', label: '数据统计', Icon: LayoutDashboard }
+  ] },
+  { id: 'stock', label: '股票', icon: ChartBar, items: [
+    { key: 'stock-stats', label: '统计', Icon: ChartBar },
+    { key: 'stock-positions', label: '仓位管理', Icon: Database }
   ] },
   { items: [
     { key: 'settings', label: '设置', Icon: Settings }
@@ -53,11 +59,13 @@ const settingsSections = [
   { key: 'pairing', label: '扩展配对', Icon: LayoutGrid }
 ];
 const X_ASSISTANT_KEYS = ['x-overview', 'library', 'materials', 'replies', 'style', 'analytics-v2'];
+const STOCK_KEYS = ['stock-stats', 'stock-positions'];
+const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS };
 const pageLabels = new Map([
   ['dashboard-v2', '首页'], ['tasks', '待办事项'], ['expiring', '到期与提醒'], ['x-overview', 'X 概览'], ['library', '内容库'], ['materials', '素材库'],
-  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['settings', '设置']
+  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-stats', '统计'], ['stock-positions', '仓位管理'], ['settings', '设置']
 ]);
-const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'x-overview': '/x-overview', 'library': '/library', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'settings': '/settings' };
+const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'x-overview': '/x-overview', 'library': '/library', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-stats': '/stock/stats', 'stock-positions': '/stock/positions', 'settings': '/settings' };
 function pageFromPath(pathname) {
   const entry = Object.entries(PAGE_PATHS).find(([, path]) => path === pathname);
   return entry ? entry[0] : 'dashboard-v2';
@@ -73,8 +81,8 @@ function AppInner() {
   }, [themeMode]);
   const toast = useToastManager();
   const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
-  const [xAssistantOpen, setXAssistantOpen] = useState(() => X_ASSISTANT_KEYS.includes(page));
-  useEffect(() => { if (X_ASSISTANT_KEYS.includes(page)) setXAssistantOpen(true); }, [page]);
+  const [openGroups, setOpenGroups] = useState(() => new Set(Object.entries(GROUP_KEYS).filter(([, keys]) => keys.includes(page)).map(([key]) => key)));
+  useEffect(() => { setOpenGroups((current) => { const next = new Set(current); for (const [key, keys] of Object.entries(GROUP_KEYS)) if (keys.includes(page)) next.add(key); return next; }); }, [page]);
   const [dashboard, setDashboard] = useState(null);
   const [packs, setPacks] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -92,6 +100,7 @@ function AppInner() {
   const [notice, setNotice] = useState('');
   const [backupInput, setBackupInput] = useState({ password: '', archive: '', confirmation: '' });
   const [settingsSection, setSettingsSection] = useState('model');
+  const [backupOpen, setBackupOpen] = useState(false);
 
   const refresh = async () => {
     try {
@@ -141,7 +150,7 @@ function AppInner() {
 
   return (
     <div className="workspace flex">
-      <aside className="workspace-sider relative shrink-0">
+      <aside className="workspace-sider shrink-0">
         <div className="brand">
           <span className="brand-logo"><Bolt /></span>
           X Assistant
@@ -151,7 +160,7 @@ function AppInner() {
             if (group.label) {
               const GroupIcon = group.icon;
               return (
-                <Collapsible key={groupIndex} open={xAssistantOpen} onOpenChange={setXAssistantOpen}>
+                <Collapsible key={groupIndex} open={openGroups.has(group.id)} onOpenChange={(open) => setOpenGroups((current) => { const next = new Set(current); if (open) next.add(group.id); else next.delete(group.id); return next; })}>
                   <CollapsibleTrigger className="group relative inline-flex w-full cursor-pointer items-center gap-1.5 rounded-sm px-2 py-2 text-start text-sm font-medium text-foreground-strong outline-none transition-colors hover:bg-background-muted hover:text-foreground-intense">
                     <GroupIcon className="size-4.5 shrink-0" />
                     <span className="flex-1">{group.label}</span>
@@ -201,8 +210,7 @@ function AppInner() {
               <Switch checked={themeMode === 'dark'} onCheckedChange={(checked) => setThemeMode(checked ? 'dark' : 'light')} />
               {themeMode === 'dark' ? '暗' : '明'}
             </label>
-            <Button variant="outline" onClick={refresh}>刷新</Button>
-            <Button disabled={!modelSettings.configured} onClick={generateNow}>立即生成 10 条</Button>
+            <Button variant="outline" onClick={() => setBackupOpen(true)}>备份</Button>
           </div>
         </header>
         {notice && (
@@ -216,7 +224,7 @@ function AppInner() {
 
         {page !== 'settings' && (
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {page === 'dashboard-v2' && dashboard && <DashboardPage dashboard={dashboard} onGenerate={generateNow} onNavigate={navigate} />}
+            {page === 'dashboard-v2' && dashboard && <DashboardPage dashboard={dashboard} onGenerate={generateNow} onRefresh={refresh} onNavigate={navigate} />}
             {page === 'x-overview' && dashboard && <XOverviewPage dashboard={dashboard} candidateEvent={candidateEvent} />}
             {page === 'expiring' && <ExpiringItemsPage />}
             {page === 'tasks' && <TaskPage />}
@@ -225,6 +233,8 @@ function AppInner() {
             {page === 'replies' && <RepliesPage replies={replies} />}
             {page === 'style' && style && <StylePage style={style} withFeedback={withFeedback} refresh={refresh} />}
             {page === 'analytics-v2' && <AnalyticsPage packs={packs} tasks={dashboard?.tasks || []} expiringItems={dashboard?.expiringItems || []} />}
+            {page === 'stock-stats' && <StockStatsPage />}
+            {page === 'stock-positions' && <StockPositionsPage />}
           </div>
         )}
         {page === 'settings' && (
@@ -360,25 +370,6 @@ function AppInner() {
                       </div>
                     </SectionCard>
                   )}
-                  <SectionCard title="加密备份与恢复" className="section-row">
-                    <p className="text-sm text-foreground-muted">备份不包含模型 API Key 和扩展访问令牌。恢复会覆盖当前数据，并先在本机保留一份加密快照。</p>
-                    <form className="mt-4 grid gap-4" onSubmit={(event) => event.preventDefault()}>
-                      <Field>
-                        <FieldLabel>备份密码（至少 12 字符）</FieldLabel>
-                        <PasswordInput value={backupInput.password} onChange={(event) => setBackupInput({ ...backupInput, password: event.target.value })} />
-                      </Field>
-                      <div><Button disabled={backupInput.password.length < 12} onClick={exportBackup}>下载加密备份</Button></div>
-                      <Field>
-                        <FieldLabel>要恢复的备份内容</FieldLabel>
-                        <Textarea rows={4} value={backupInput.archive} placeholder="打开备份文件并粘贴全部内容" onChange={(event) => setBackupInput({ ...backupInput, archive: event.target.value })} />
-                      </Field>
-                      <Field>
-                        <FieldLabel>输入 RESTORE 确认覆盖</FieldLabel>
-                        <Input value={backupInput.confirmation} onChange={(event) => setBackupInput({ ...backupInput, confirmation: event.target.value })} />
-                      </Field>
-                      <div><Button variant="destructive" disabled={!backupInput.archive || backupInput.confirmation !== 'RESTORE' || backupInput.password.length < 12} onClick={restoreBackup}>恢复此备份</Button></div>
-                    </form>
-                  </SectionCard>
                   <ArchiveProfileCard onChanged={refresh} />
                 </>
               )}
@@ -393,6 +384,33 @@ function AppInner() {
           </div>
         )}
       </main>
+        <Dialog open={backupOpen} onOpenChange={setBackupOpen}>
+          <DialogContent className="sm:w-110">
+            <DialogHeader>
+              <DialogTitle>数据备份与恢复</DialogTitle>
+              <DialogDescription>备份不包含模型 API Key 和扩展访问令牌。恢复会覆盖当前数据，并先在本机保留一份加密快照。</DialogDescription>
+            </DialogHeader>
+            <DialogBody className="flex flex-col gap-4">
+              <Field>
+                <FieldLabel>备份密码（至少 12 字符）</FieldLabel>
+                <PasswordInput value={backupInput.password} onChange={(event) => setBackupInput({ ...backupInput, password: event.target.value })} />
+              </Field>
+              <div><Button disabled={backupInput.password.length < 12} onClick={exportBackup}>下载加密备份</Button></div>
+              <Field>
+                <FieldLabel>要恢复的备份内容</FieldLabel>
+                <Textarea rows={4} value={backupInput.archive} placeholder="打开备份文件并粘贴全部内容" onChange={(event) => setBackupInput({ ...backupInput, archive: event.target.value })} />
+              </Field>
+              <Field>
+                <FieldLabel>输入 RESTORE 确认覆盖</FieldLabel>
+                <Input value={backupInput.confirmation} onChange={(event) => setBackupInput({ ...backupInput, confirmation: event.target.value })} />
+              </Field>
+              <div><Button variant="destructive" disabled={!backupInput.archive || backupInput.confirmation !== 'RESTORE' || backupInput.password.length < 12} onClick={restoreBackup}>恢复此备份</Button></div>
+            </DialogBody>
+            <DialogFooter>
+              <DialogClose render={<Button variant="soft">关闭</Button>} />
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
     </div>
   );
 }
@@ -406,7 +424,7 @@ function App() {
   );
 }
 
-function DashboardPage({ dashboard, onGenerate, onNavigate }) {
+function DashboardPage({ dashboard, onGenerate, onRefresh, onNavigate }) {
   const urgentItems = dashboard.expiringItems.filter((item) => item.reminderStatus === 'overdue' || item.reminderStatus === 'due');
   const expiringOverdue = dashboard.expiringItems.filter((item) => item.reminderStatus === 'overdue').length;
   const expiringDue = dashboard.expiringItems.filter((item) => item.reminderStatus === 'due').length;
@@ -419,16 +437,19 @@ function DashboardPage({ dashboard, onGenerate, onNavigate }) {
   ];
   return (
     <>
-      <Card className="mb-4 bg-linear-to-r from-primary/10 to-info/5">
-        <div className="flex flex-wrap items-center justify-between gap-6 px-4 py-5">
-          <div>
-            <div className="eyebrow">TODAY'S COMMAND CENTER</div>
-            <h2 className="m-0 mt-1 text-3xl font-bold">把今天的判断，变成可发布的内容</h2>
-            <p className="mt-1 text-foreground-muted">先处理阻塞事项，再生成可选择的创作候选。</p>
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-6 px-4 py-5">
+            <div>
+              <div className="eyebrow">TODAY'S COMMAND CENTER</div>
+              <h2 className="m-0 mt-1 text-3xl font-bold">把今天的判断，变成可发布的内容</h2>
+              <p className="mt-1 text-foreground-muted">先处理阻塞事项，再生成可选择的创作候选。</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={onRefresh}>刷新</Button>
+              <Button size="lg" onClick={onGenerate}>开始今日创作</Button>
+            </div>
           </div>
-          <Button size="lg" onClick={onGenerate}>开始今日创作</Button>
-        </div>
-      </Card>
+        </Card>
       <div className="section-row grid grid-cols-24 gap-4">
         {charts.map((chart) => (
           <div key={chart.title} className="col-span-24 sm:col-span-12 xl:col-span-6">

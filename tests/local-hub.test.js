@@ -48,6 +48,9 @@ test('工作台通过服务创建定位和素材，并在概览中读取同一�
     assert.equal(dashboard.response.status, 200);
     assert.equal(dashboard.payload.profile.themes[0], 'AI');
     assert.equal(dashboard.payload.materialCount, 1);
+    assert.equal(dashboard.payload.calendar.days.length, 42);
+    assert.equal(dashboard.payload.calendar.days.filter((day) => day.lunarLabel).length, 42);
+    assert.equal(dashboard.payload.calendar.timezone, 'Asia/Shanghai');
   });
 });
 

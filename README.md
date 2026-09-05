@@ -4,7 +4,7 @@
 
 ## 功能
 
-工作台一级导航为「首页、待办事项、到期与提醒、X Assistant、设置」，X Assistant 提供 X 概览及既有内容相关页面。
+- 工作台一级导航为「首页、待办事项、到期与提醒、Kindle、X Assistant、设置」，Kindle 页面用于本地电子书目录浏览。
 
 ### 个人事务
 
@@ -15,6 +15,11 @@
 - 设置页展示 SQLite 数据文件路径与大小、Keychain 配置状态、下一次 X 生成时间与只读保留策略，支持 Finder 定位与复制路径；
 - 数据保留策略：X 内容与回复可编辑 180 天、只读 30 天后清理；定位与素材保存至主动删除；待办与到期项保存至主动处理、停用、归档或删除；
 - 支持手动创建密码加密的完整数据备份与受控恢复，备份排除 Keychain API Key。
+
+### Kindle
+
+- 展示 Kindle / Send to Kindle 与 KOReader 支持格式；提供 [KOReader 插件检索](https://github.com/search?q=koplugin&type=repositories&p=1) 和 [官方中文使用说明](https://koreader.rocks/user_guide/zh_Hans.html) 入口；
+- 提供 [图书下载](https://zh.z-library.sk/) 链接，可选择本地目录读入并展示其中支持的电子书文件；读入文件只在当前浏览器页面内读取，不上传到后端，确认同步后由本地服务按 SSH 配置传输到 Kindle，上传完成后再原子重命名，避免远端看到不完整文件。
 
 ### X Assistant
 
@@ -44,6 +49,7 @@ packages/
   module-expiring/      到期与提醒模块
   module-x/             X 内容模块（概览、内容库、素材库、回复、风格、统计）
   module-stock/         股票模块（统计、仓位管理）
+  module-kindle/         Kindle 本地电子书目录
   h5/                   GitHub Pages H5 页面（零构建静态，含 idea-engine）
   chrome-extension/     Chrome 浏览器扩展（Manifest V3）
 local-hub/              本地后端（单进程 + SQLite + Bark 推送）

@@ -1,8 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@appica/ui-react/table';
-import { api, Empty } from '@personal-workbench/core';
-
-const MARKET_LABEL = { US: '美股', HK: '港股', CN: 'A 股' };
+import { api, Empty, NumberRoller } from '@personal-workbench/core';
 
 function formatMoney(value) {
   return new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -13,13 +10,34 @@ function signed(value, fractionDigits = 2) {
   return `${sign}${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits }).format(Math.abs(value))}`;
 }
 
-function StockStatsPage() {
+function AnimatedSigned({ value, fractionDigits = 2, suffix = '' }) {
+  const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+  return <NumberRoller value={Math.abs(value)} format={(number) => `${sign}${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits }).format(number)}${suffix}`} />;
+}
+
+function StockStatsPage({ positions: externalPositions, loading: externalLoading } = {}) {
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { api('/stock-positions').then((data) => setPositions(data.positions)).catch(() => setPositions([])).finally(() => setLoading(false)); }, []);
+  const positionsForView = externalPositions ?? positions;
+  const loadingForView = externalLoading ?? loading;
+  useEffect(() => {
+    if (externalPositions !== undefined) return;
+    const load = async () => {
+      try {
+        const settings = await api('/finnhub-settings');
+        if (settings.configured) await api('/stock-positions/refresh-prices', { method: 'POST', body: '{}' });
+        const data = await api('/stock-positions');
+        setPositions(data.positions);
+      } catch {
+        const data = await api('/stock-positions').catch(() => ({ positions: [] }));
+        setPositions(data.positions);
+      } finally { setLoading(false); }
+    };
+    load();
+  }, [externalPositions]);
 
   const model = useMemo(() => {
-    const enriched = positions.map((item) => {
+    const enriched = positionsForView.map((item) => {
       const cost = item.quantity * item.costPrice;
       const value = item.quantity * item.currentPrice;
       const pnl = value - cost;
@@ -28,19 +46,12 @@ function StockStatsPage() {
     const totalCost = enriched.reduce((sum, item) => sum + item.cost, 0);
     const totalValue = enriched.reduce((sum, item) => sum + item.value, 0);
     const totalPnl = totalValue - totalCost;
-    const byMarket = Object.entries(enriched.reduce((acc, item) => {
-      const entry = acc[item.market] || { value: 0, cost: 0 };
-      entry.value += item.value;
-      entry.cost += item.cost;
-      acc[item.market] = entry;
-      return acc;
-    }, {})).map(([market, data]) => ({ market, ...data })).sort((a, b) => b.value - a.value);
     const sorted = [...enriched].sort((a, b) => b.pnlPercent - a.pnlPercent);
-    return { enriched, totalCost, totalValue, totalPnl, pnlPercent: totalCost > 0 ? totalPnl / totalCost : 0, byMarket, sorted };
-  }, [positions]);
+    return { totalCost, totalValue, totalPnl, pnlPercent: totalCost > 0 ? totalPnl / totalCost : 0, sorted };
+  }, [positionsForView]);
 
-  if (loading) return <p className="text-foreground-muted">正在加载统计…</p>;
-  if (!positions.length) {
+  if (loadingForView) return <p className="text-foreground-muted">正在加载统计…</p>;
+  if (!positionsForView.length) {
     return (
       <div className="py-16">
         <Empty description="还没有持仓。先在「仓位管理」添加第一笔，这里会显示整体盈亏。" />
@@ -57,11 +68,11 @@ function StockStatsPage() {
       <header className="flex flex-col gap-3">
         <p className="text-[11px] font-extrabold tracking-[0.14em]" style={{ color: accent }}>总盈亏</p>
         <div className="flex items-baseline gap-4">
-          <span className="text-[46px] font-bold leading-none tracking-tight tabular-nums" style={{ color: accent }}>{signed(model.totalPnl)}</span>
-          <span className="text-[20px] font-semibold tabular-nums" style={{ color: accent }}>{signed(model.pnlPercent * 100, 2)}%</span>
+          <span className="text-[46px] font-bold leading-none tracking-tight tabular-nums" style={{ color: accent }}><AnimatedSigned value={model.totalPnl} /></span>
+          <span className="text-[20px] font-semibold tabular-nums" style={{ color: accent }}><AnimatedSigned value={model.pnlPercent * 100} suffix="%" /></span>
         </div>
         <p className="text-sm text-foreground-muted tabular-nums">
-          成本 {formatMoney(model.totalCost)} · 市值 {formatMoney(model.totalValue)} · 持仓 {positions.length}
+          成本 <NumberRoller value={model.totalCost} format={formatMoney} /> · 市值 <NumberRoller value={model.totalValue} format={formatMoney} /> · 持仓 <NumberRoller value={positionsForView.length} />
         </p>
       </header>
 
@@ -88,7 +99,7 @@ function StockStatsPage() {
                 <div className="absolute inset-x-[24%] rounded-t-sm" style={barStyle} />
                 <span className="absolute inset-x-0 text-center text-[11px] font-bold leading-tight" style={{ ...tagStyle, color: itemUp ? 'var(--profit)' : 'var(--loss)' }}>
                   {item.symbol}<br />
-                  <span className="font-semibold tabular-nums">{signed(item.pnlPercent * 100, 1)}%</span>
+                  <span className="font-semibold tabular-nums"><AnimatedSigned value={item.pnlPercent * 100} fractionDigits={1} suffix="%" /></span>
                 </span>
               </div>
             );
@@ -96,51 +107,6 @@ function StockStatsPage() {
         </div>
       </section>
 
-      {/* 市场分布：克制的横向条 */}
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold">市场分布</h3>
-        {model.byMarket.map((entry) => (
-          <div key={entry.market} className="flex items-center gap-3">
-            <span className="w-12 text-sm text-foreground-muted">{MARKET_LABEL[entry.market] || entry.market}</span>
-            <div className="h-2 flex-1 overflow-hidden rounded-full bg-border/60">
-              <div className="h-full rounded-full" style={{ width: `${(entry.value / model.totalValue) * 100}%`, background: 'linear-gradient(90deg, #7665ff, #39d8ff)' }} />
-            </div>
-            <span className="w-24 text-right text-sm tabular-nums">{formatMoney(entry.value)}</span>
-          </div>
-        ))}
-      </section>
-
-      {/* 持仓明细 */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold">持仓明细</h3>
-        <Table hoverableRows>
-          <TableHeader>
-            <TableRow>
-              <TableHead>代码</TableHead>
-              <TableHead>名称</TableHead>
-              <TableHead>市场</TableHead>
-              <TableHead className="text-right">市值</TableHead>
-              <TableHead className="text-right">成本</TableHead>
-              <TableHead className="text-right">盈亏</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {model.enriched.map((item) => {
-              const itemUp = item.pnl >= 0;
-              return (
-                <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.symbol}</TableCell>
-                  <TableCell>{item.name}</TableCell>
-                  <TableCell className="text-foreground-muted">{MARKET_LABEL[item.market] || item.market}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatMoney(item.value)}</TableCell>
-                  <TableCell className="text-right tabular-nums text-foreground-muted">{formatMoney(item.cost)}</TableCell>
-                  <TableCell className="text-right tabular-nums" style={{ color: itemUp ? 'var(--profit)' : 'var(--loss)' }}>{signed(item.pnl)}（{signed(item.pnlPercent * 100, 1)}%）</TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </section>
     </div>
   );
 }

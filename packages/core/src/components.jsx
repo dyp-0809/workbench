@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@appica/ui-react/button';
 import { Card, CardHeader, CardTitle } from '@appica/ui-react/card';
 import { Input } from '@appica/ui-react/input';
@@ -7,6 +7,39 @@ import { Eye, EyeOff } from '@appica/icons-react';
 
 function Empty({ description }) {
   return <div className="py-10 text-center text-sm text-foreground-muted">{description}</div>;
+}
+
+function NumberRoller({ value, format = (number) => String(number), className = '', ariaLabel }) {
+  const target = Number(value);
+  const safeTarget = Number.isFinite(target) ? target : 0;
+  const finalText = format(safeTarget);
+  const [fromText, setFromText] = useState(finalText);
+  const [animating, setAnimating] = useState(false);
+  const previous = useRef('');
+
+  useEffect(() => {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const oldText = previous.current || finalText.replace(/\d/g, '0');
+    previous.current = finalText;
+    setFromText(oldText);
+    if (oldText === finalText || reduceMotion) {
+      setAnimating(false);
+      return undefined;
+    }
+    setAnimating(true);
+    const timer = window.setTimeout(() => setAnimating(false), 450);
+    return () => window.clearTimeout(timer);
+  }, [finalText]);
+
+  const chars = [...finalText];
+  return <span className={`dashboard-number-roller ${animating ? 'is-animating' : ''} ${className}`}>
+    <span aria-hidden="true" className="dashboard-number-visual">{chars.map((char, index) => {
+      const oldChar = [...fromText][index] || char;
+      if (!/\d/.test(char) || oldChar === char) return <span key={`${index}-${char}`} className="dashboard-number-glyph">{char}</span>;
+      return <span key={`${index}-${char}`} className="dashboard-digit-slot"><span className={animating ? 'dashboard-digit-track is-rolling' : 'dashboard-digit-track'}><span>{oldChar}</span><span>{char}</span></span></span>;
+    })}</span>
+    <span className="sr-only" aria-label={ariaLabel || finalText}>{finalText}</span>
+  </span>;
 }
 
 function DescriptionList({ items }) {
@@ -41,7 +74,7 @@ function Metric({ title, value, icon }) {
           <span className="text-info-emphasis text-xl">{icon}</span>
           <div>
             <div className="text-sm text-foreground-muted">{title}</div>
-            <div className="metric-value text-foreground-intense">{value}</div>
+            <div className="metric-value text-foreground-intense">{typeof value === 'number' ? <NumberRoller value={value} /> : value}</div>
           </div>
         </div>
       </Card>
@@ -80,4 +113,4 @@ const statusTagLabel = {
   overdue: '已逾期', due: '需要处理', upcoming: '未到提醒', pending: '待确认', disabled: '已停用', notified: '已通知'
 };
 
-export { Empty, DescriptionList, SectionCard, Metric, PasswordInput, LoadingButton, statusTagVariant, statusTagLabel };
+export { Empty, DescriptionList, SectionCard, Metric, NumberRoller, PasswordInput, LoadingButton, statusTagVariant, statusTagLabel };

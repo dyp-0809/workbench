@@ -7,12 +7,30 @@ const { decryptBackup, encryptBackup } = require('./backup');
 const { parseXArchive } = require('./archive-parser');
 const { buildObjectiveProfile } = require('./archive-profile');
 const { advanceFrom, nextOccurrence } = require('./recurrence');
+const { Solar } = require('lunar-javascript');
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark');
+const { runKindleSync } = require('./kindle-sync');
+const DEFAULT_STOCK_ALERT_RULES = [
+  { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
+  { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
+  { id: 'high-risk', level: '高风险', uvxyThreshold: 25, marketThreshold: -3, twoDayThreshold: 30, message: '市场出现显著压力，审视杠杆与集中持仓', enabled: true }
+];
 
 const RETENTION_DAYS = 180;
 const EXPIRY_GRACE_DAYS = 30;
 const MAX_BODY_BYTES = 256 * 1024;
-const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
+// X 官方归档 ZIP 含全部媒体，体积普遍超过 512MB；上限取 Node Buffer 单对象上限（2^32-1 字节）以内，
+// 再大 Buffer.concat 会直接抛 RangeError
+const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024 - 1;
+const DEFAULT_STOCK_SYMBOLS = [
+  { symbol: 'AAPL', name: '苹果', market: 'US' },
+  { symbol: 'MSFT', name: '微软', market: 'US' },
+  { symbol: 'GOOGL', name: '谷歌', market: 'US' },
+  { symbol: 'AMZN', name: '亚马逊', market: 'US' },
+  { symbol: 'META', name: 'Meta', market: 'US' },
+  { symbol: 'NVDA', name: '英伟达', market: 'US' },
+  { symbol: 'TSLA', name: '特斯拉', market: 'US' }
+];
 
 function createId() {
   return crypto.randomUUID();
@@ -87,6 +105,25 @@ function formatDateTime(iso) {
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+function normalizeOperatingDate(value) {
+  const date = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date) {
+    throw new Error('发布日期无效。');
+  }
+  return date;
+}
+function nextOperatingDate(value) {
+  const date = new Date(`${normalizeOperatingDate(value)}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+function normalizePublishTime(value, label) {
+  if (value === null || value === undefined || value === '') return null;
+  const time = String(value).trim();
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`${label}无效。`);
+  return time;
+}
+
 function migrateExpiringItems(db) {
   const columns = db.prepare('PRAGMA table_info(expiring_items)').all().map((column) => column.name);
   if (!columns.includes('mode')) {
@@ -110,8 +147,63 @@ function migrateStockPositions(db) {
   if (!columns.includes('target_percent')) {
     db.exec('ALTER TABLE stock_positions ADD COLUMN target_percent REAL');
   }
+  if (!columns.includes('price_updated_at')) {
+    db.exec('ALTER TABLE stock_positions ADD COLUMN price_updated_at TEXT');
+  }
+  if (!columns.includes('trailing_pe')) {
+    db.exec('ALTER TABLE stock_positions ADD COLUMN trailing_pe REAL');
+  }
+  if (!columns.includes('forward_pe')) {
+    db.exec('ALTER TABLE stock_positions ADD COLUMN forward_pe REAL');
+  }
+  if (!columns.includes('market_error')) {
+    db.exec('ALTER TABLE stock_positions ADD COLUMN market_error TEXT');
+  }
 }
 
+function migrateStockEntryPlans(db) {
+  const columns = db.prepare('PRAGMA table_info(stock_entry_plans)').all().map((column) => column.name);
+  if (!columns.includes('current_price')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN current_price REAL');
+  if (!columns.includes('trailing_pe')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN trailing_pe REAL');
+  if (!columns.includes('forward_pe')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN forward_pe REAL');
+  if (!columns.includes('market_status')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_status TEXT');
+  if (!columns.includes('market_updated_at')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_updated_at TEXT');
+  if (!columns.includes('market_error')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_error TEXT');
+}
+function migrateContentCandidates(db) {
+  const columns = db.prepare('PRAGMA table_info(content_candidates)').all().map((column) => column.name);
+  if (!columns.includes('suggested_publish_time')) db.exec('ALTER TABLE content_candidates ADD COLUMN suggested_publish_time TEXT');
+  if (!columns.includes('planned_publish_time')) db.exec('ALTER TABLE content_candidates ADD COLUMN planned_publish_time TEXT');
+  db.exec('DROP INDEX IF EXISTS content_candidates_unique_planned_time');
+}
+
+function migrateGenerationSchedules(db) {
+  const timestamp = asIso();
+  const migration = db.prepare('INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES (?, ?)').run('daily-next-day-generation-at-22', timestamp);
+  if (!migration.changes) return;
+
+  const migrate = db.transaction(() => {
+    db.prepare("UPDATE weekly_schedules SET time = '22:00', enabled = 1, updated_at = ?").run(timestamp);
+    const insert = db.prepare(`INSERT OR IGNORE INTO weekly_schedules(weekday, time, enabled, time_zone, updated_at)
+      VALUES (?, '22:00', 1, 'Asia/Shanghai', ?)`);
+    for (let weekday = 0; weekday < 7; weekday += 1) insert.run(weekday, timestamp);
+  });
+  migrate();
+}
+
+
+function seedStockSymbols(db) {
+  const timestamp = asIso();
+  const insertDefault = db.prepare(`INSERT OR IGNORE INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)`);
+  const insertExisting = db.prepare(`INSERT OR IGNORE INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+    SELECT symbol, name, market, 0, created_at, updated_at FROM stock_positions`);
+  const seed = db.transaction(() => {
+    for (const item of DEFAULT_STOCK_SYMBOLS) insertDefault.run(item.symbol, item.name, item.market, timestamp, timestamp);
+    insertExisting.run();
+  });
+  seed();
+}
 
 function initializeSchema(db) {
   db.exec(`
@@ -120,6 +212,10 @@ function initializeSchema(db) {
       id TEXT PRIMARY KEY,
       payload TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS weekly_schedules (
       weekday INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6),
@@ -141,6 +237,24 @@ function initializeSchema(db) {
       preference_key TEXT PRIMARY KEY,
       mode TEXT NOT NULL CHECK(mode IN ('automatic', 'fixed', 'reduced', 'ignored')),
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock_alert_rules (
+      id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock_alert_snapshots (
+      symbol TEXT NOT NULL,
+      trading_date TEXT NOT NULL,
+      change_percent REAL,
+      captured_at TEXT NOT NULL,
+      PRIMARY KEY(symbol, trading_date)
+    );
+    CREATE TABLE IF NOT EXISTS stock_alert_deliveries (
+      rule_id TEXT NOT NULL,
+      trading_date TEXT NOT NULL,
+      pushed_at TEXT NOT NULL,
+      PRIMARY KEY(rule_id, trading_date)
     );
     CREATE TABLE IF NOT EXISTS extension_tokens (
       token_hash TEXT PRIMARY KEY,
@@ -207,6 +321,8 @@ function initializeSchema(db) {
       tone TEXT NOT NULL,
       recommendation TEXT NOT NULL CHECK(recommendation IN ('recommended', 'explore')),
       source_material_ids TEXT NOT NULL DEFAULT '[]',
+      suggested_publish_time TEXT,
+      planned_publish_time TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS candidate_events (
@@ -215,6 +331,20 @@ function initializeSchema(db) {
       event_type TEXT NOT NULL CHECK(event_type IN ('selected', 'copied', 'queued', 'published')),
       created_at TEXT NOT NULL,
       UNIQUE(candidate_id, event_type)
+    );
+    CREATE TABLE IF NOT EXISTS content_feedback_archive (
+      id TEXT PRIMARY KEY,
+      candidate_id TEXT UNIQUE REFERENCES content_candidates(id) ON DELETE SET NULL,
+      content TEXT NOT NULL,
+      topic TEXT NOT NULL,
+      format TEXT NOT NULL,
+      language TEXT NOT NULL,
+      tone TEXT NOT NULL,
+      operating_date TEXT,
+      planned_publish_time TEXT,
+      performance TEXT NOT NULL CHECK(performance IN ('pending', 'good', 'poor')),
+      archived_at TEXT NOT NULL,
+      assessed_at TEXT
     );
     CREATE TABLE IF NOT EXISTS reply_sessions (
       id TEXT PRIMARY KEY,
@@ -266,16 +396,64 @@ function initializeSchema(db) {
       notes TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      target_percent REAL
+      target_percent REAL,
+      price_updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stock_entry_plans (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
+      entry_price REAL NOT NULL,
+      target_percent REAL,
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      current_price REAL,
+      trailing_pe REAL,
+      forward_pe REAL,
+      market_status TEXT,
+      market_updated_at TEXT,
+      market_error TEXT
     );
     CREATE TABLE IF NOT EXISTS stock_settings (
       id TEXT PRIMARY KEY,
       total_assets REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS stock_symbols (
+      symbol TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
+      is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS menstrual_cycles (
+      id TEXT PRIMARY KEY,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      flow TEXT NOT NULL CHECK(flow IN ('light', 'medium', 'heavy')),
+      symptoms TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS menstrual_mood_logs (
+      id TEXT PRIMARY KEY,
+      logged_on TEXT NOT NULL UNIQUE,
+      mood INTEGER NOT NULL CHECK(mood BETWEEN 1 AND 5),
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   migrateExpiringItems(db);
   migrateStockPositions(db);
+  migrateGenerationSchedules(db);
+  migrateStockEntryPlans(db);
+  migrateContentCandidates(db);
+  seedStockSymbols(db);
 }
 function createContentHub(options = {}) {
   const now = options.now || (() => new Date());
@@ -286,6 +464,10 @@ function createContentHub(options = {}) {
   const semanticExtractor = options.semanticExtractor;
   const barkSettings = options.barkSettings;
   const barkPusher = options.barkPusher;
+  const finnhubSettings = options.finnhubSettings;
+  const quoteFetcher = options.quoteFetcher;
+  const valuationFetcher = options.valuationFetcher;
+  const kindleSync = typeof options.kindleSync === 'function' ? options.kindleSync : runKindleSync;
   fs.mkdirSync(dataDirectory, { recursive: true });
   const databasePath = path.join(dataDirectory, 'x-assistant.sqlite');
   const db = new Database(databasePath);
@@ -407,11 +589,159 @@ function createContentHub(options = {}) {
     return db.prepare('DELETE FROM personal_tasks WHERE id = ?').run(id).changes > 0;
   }
 
-  function normalizeStockNumber(value, label) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) throw new Error(`${label}必须是数字。`);
-    return number;
-  }
+function normalizeCycleDate(value, label, { optional = false } = {}) {
+  if (optional && (value === undefined || value === null || value === '')) return null;
+  const date = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`${label}必须是有效日期。`);
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) throw new Error(`${label}必须是有效日期。`);
+  return date;
+}
+
+function normalizeCycleFlow(value, fallback = 'medium') {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (!['light', 'medium', 'heavy'].includes(value)) throw new Error('经量必须是少量、适中或较多。');
+  return value;
+}
+
+function mapMenstrualCycle(row) {
+  return {
+    id: row.id,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    flow: row.flow,
+    symptoms: row.symptoms,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function listMenstrualCycles() {
+  return db.prepare('SELECT * FROM menstrual_cycles ORDER BY start_date DESC, created_at DESC').all().map(mapMenstrualCycle);
+}
+
+function getMenstrualSettings() {
+  const row = db.prepare("SELECT mode FROM preference_overrides WHERE preference_key = 'privacy:menstrual'").get();
+  return { menstrualEnabled: row ? row.mode === 'fixed' : true };
+}
+
+function setMenstrualSettings(input) {
+  const enabled = input?.menstrualEnabled === true;
+  setPreferenceOverride({ key: 'privacy:menstrual', mode: enabled ? 'fixed' : 'ignored' });
+  return getMenstrualSettings();
+}
+
+function createMenstrualCycle(input) {
+  const startDate = normalizeCycleDate(input.startDate, '开始日期');
+  const endDate = normalizeCycleDate(input.endDate, '结束日期', { optional: true });
+  if (endDate && endDate < startDate) throw new Error('结束日期不能早于开始日期。');
+  const timestamp = asIso(undefined, now());
+  const cycle = {
+    id: createId(),
+    startDate,
+    endDate,
+    flow: normalizeCycleFlow(input.flow),
+    symptoms: String(input.symptoms || '').trim(),
+    notes: String(input.notes || '').trim(),
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  db.prepare('INSERT INTO menstrual_cycles(id, start_date, end_date, flow, symptoms, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(cycle.id, cycle.startDate, cycle.endDate, cycle.flow, cycle.symptoms, cycle.notes, timestamp, timestamp);
+  return cycle;
+}
+
+function updateMenstrualCycle(id, input) {
+  const existing = db.prepare('SELECT * FROM menstrual_cycles WHERE id = ?').get(id);
+  if (!existing) return null;
+  const startDate = input.startDate === undefined ? existing.start_date : normalizeCycleDate(input.startDate, '开始日期');
+  const endDate = input.endDate === undefined ? existing.end_date : normalizeCycleDate(input.endDate, '结束日期', { optional: true });
+  if (endDate && endDate < startDate) throw new Error('结束日期不能早于开始日期。');
+  const flow = input.flow === undefined ? existing.flow : normalizeCycleFlow(input.flow);
+  const symptoms = typeof input.symptoms === 'string' ? input.symptoms.trim() : existing.symptoms;
+  const notes = typeof input.notes === 'string' ? input.notes.trim() : existing.notes;
+  const timestamp = asIso(undefined, now());
+  db.prepare('UPDATE menstrual_cycles SET start_date = ?, end_date = ?, flow = ?, symptoms = ?, notes = ?, updated_at = ? WHERE id = ?')
+    .run(startDate, endDate, flow, symptoms, notes, timestamp, id);
+  return mapMenstrualCycle(db.prepare('SELECT * FROM menstrual_cycles WHERE id = ?').get(id));
+}
+
+function deleteMenstrualCycle(id) {
+  return db.prepare('DELETE FROM menstrual_cycles WHERE id = ?').run(id).changes > 0;
+}
+function normalizeMood(value) {
+  const mood = Number(value);
+  if (!Number.isInteger(mood) || mood < 1 || mood > 5) throw new Error('情绪评分必须在 1 到 5 之间。');
+  return mood;
+}
+
+function mapMenstrualMoodLog(row) {
+  return {
+    id: row.id,
+    loggedOn: row.logged_on,
+    mood: row.mood,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function listMenstrualMoodLogs() {
+  return db.prepare('SELECT * FROM menstrual_mood_logs ORDER BY logged_on DESC, created_at DESC').all().map(mapMenstrualMoodLog);
+}
+
+function assertMoodLogDateAvailable(loggedOn, excludedId) {
+  const existing = excludedId
+    ? db.prepare('SELECT id FROM menstrual_mood_logs WHERE logged_on = ? AND id != ?').get(loggedOn, excludedId)
+    : db.prepare('SELECT id FROM menstrual_mood_logs WHERE logged_on = ?').get(loggedOn);
+  if (existing) throw new Error('当天已有情绪记录，请编辑该记录。');
+}
+
+function createMenstrualMoodLog(input) {
+  const loggedOn = normalizeCycleDate(input.loggedOn, '记录日期');
+  assertMoodLogDateAvailable(loggedOn);
+  const timestamp = asIso(undefined, now());
+  const moodLog = {
+    id: createId(),
+    loggedOn,
+    mood: normalizeMood(input.mood),
+    notes: String(input.notes || '').trim(),
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  db.prepare('INSERT INTO menstrual_mood_logs(id, logged_on, mood, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(moodLog.id, moodLog.loggedOn, moodLog.mood, moodLog.notes, timestamp, timestamp);
+  return moodLog;
+}
+
+function updateMenstrualMoodLog(id, input) {
+  const existing = db.prepare('SELECT * FROM menstrual_mood_logs WHERE id = ?').get(id);
+  if (!existing) return null;
+  const loggedOn = input.loggedOn === undefined ? existing.logged_on : normalizeCycleDate(input.loggedOn, '记录日期');
+  assertMoodLogDateAvailable(loggedOn, id);
+  const mood = input.mood === undefined ? existing.mood : normalizeMood(input.mood);
+  const notes = typeof input.notes === 'string' ? input.notes.trim() : existing.notes;
+  const timestamp = asIso(undefined, now());
+  db.prepare('UPDATE menstrual_mood_logs SET logged_on = ?, mood = ?, notes = ?, updated_at = ? WHERE id = ?')
+    .run(loggedOn, mood, notes, timestamp, id);
+  return mapMenstrualMoodLog(db.prepare('SELECT * FROM menstrual_mood_logs WHERE id = ?').get(id));
+}
+
+function deleteMenstrualMoodLog(id) {
+  return db.prepare('DELETE FROM menstrual_mood_logs WHERE id = ?').run(id).changes > 0;
+}
+
+
+function normalizeStockSymbol(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function normalizeStockNumber(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${label}必须是数字。`);
+  return number;
+}
 
   function normalizeTargetPercent(value) {
     if (value === undefined || value === null || value === '') return null;
@@ -421,15 +751,126 @@ function createContentHub(options = {}) {
   }
 
   function mapStockPosition(row) {
-    return { id: row.id, symbol: row.symbol, name: row.name, market: row.market, quantity: row.quantity, costPrice: row.cost_price, currentPrice: row.current_price, targetPercent: row.target_percent, notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at };
+    return { id: row.id, symbol: row.symbol, name: row.name, market: row.market, quantity: row.quantity, costPrice: row.cost_price, currentPrice: row.current_price, targetPercent: row.target_percent, notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at, priceUpdatedAt: row.price_updated_at, trailingPE: row.trailing_pe, forwardPE: row.forward_pe, valuationError: row.market_error };
   }
 
   function listStockPositions() {
-    return db.prepare('SELECT * FROM stock_positions ORDER BY created_at').all().map(mapStockPosition);
-  }
+  return db.prepare('SELECT * FROM stock_positions ORDER BY created_at').all().map(mapStockPosition);
+}
 
-  function createStockPosition(input) {
-    const symbol = String(input.symbol || '').trim();
+function mapStockSymbol(row) {
+  return { symbol: row.symbol, name: row.name, market: row.market, isDefault: Boolean(row.is_default) };
+}
+
+function listStockSymbols() {
+  return db.prepare('SELECT * FROM stock_symbols ORDER BY is_default DESC, updated_at DESC, symbol COLLATE NOCASE').all().map(mapStockSymbol);
+}
+
+function upsertStockSymbol(input) {
+  const symbol = normalizeStockSymbol(input.symbol);
+  const name = String(input.name || '').trim();
+  const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
+  if (!symbol || !name || !market) return null;
+  const timestamp = asIso(undefined, now());
+  db.prepare(`INSERT INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+    VALUES (?, ?, ?, 0, ?, ?)
+    ON CONFLICT(symbol) DO UPDATE SET name = excluded.name, market = excluded.market, updated_at = excluded.updated_at`)
+    .run(symbol, name, market, timestamp, timestamp);
+  return { symbol, name, market };
+}
+
+function mapStockEntryPlan(row) {
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    name: row.name,
+    market: row.market,
+    entryPrice: row.entry_price,
+    targetPercent: row.target_percent,
+    notes: row.notes,
+    currentPrice: row.current_price,
+    trailingPE: row.trailing_pe,
+    forwardPE: row.forward_pe,
+    marketStatus: row.market_status,
+    marketUpdatedAt: row.market_updated_at,
+    marketError: row.market_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function listStockEntryPlans() {
+  return db.prepare('SELECT * FROM stock_entry_plans ORDER BY created_at').all().map(mapStockEntryPlan);
+}
+
+function createStockEntryPlan(input) {
+  const symbol = normalizeStockSymbol(input.symbol);
+  const name = String(input.name || '').trim();
+  const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
+  if (!symbol) throw new Error('股票代码不能为空。');
+  if (!name) throw new Error('股票名称不能为空。');
+  if (!market) throw new Error('市场必须是 US、HK 或 CN。');
+  const entryPrice = normalizeStockNumber(input.entryPrice, '开仓位置');
+  if (entryPrice < 0) throw new Error('开仓位置不能为负数。');
+  const targetPercent = normalizeTargetPercent(input.targetPercent);
+  const timestamp = asIso(undefined, now());
+  const plan = { id: createId(), symbol, name, market, entryPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp };
+  db.prepare('INSERT INTO stock_entry_plans(id, symbol, name, market, entry_price, target_percent, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(plan.id, plan.symbol, plan.name, plan.market, plan.entryPrice, plan.targetPercent, plan.notes, timestamp, timestamp);
+  upsertStockSymbol(plan);
+  return plan;
+}
+
+function updateStockEntryPlan(id, input) {
+  const existing = db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id);
+  if (!existing) return null;
+  const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? normalizeStockSymbol(input.symbol) : existing.symbol;
+  const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
+  const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : existing.market;
+  const entryPrice = input.entryPrice === undefined ? existing.entry_price : normalizeStockNumber(input.entryPrice, '开仓位置');
+  if (entryPrice < 0) throw new Error('开仓位置不能为负数。');
+  const targetPercent = input.targetPercent === undefined ? existing.target_percent : normalizeTargetPercent(input.targetPercent);
+    const notes = typeof input.notes === 'string' ? input.notes.trim() : existing.notes;
+    const cacheInvalidated = symbol !== existing.symbol || market !== existing.market;
+    const currentPrice = cacheInvalidated ? null : existing.current_price;
+    const trailingPE = cacheInvalidated ? null : existing.trailing_pe;
+    const forwardPE = cacheInvalidated ? null : existing.forward_pe;
+    const marketUpdatedAt = cacheInvalidated ? null : existing.market_updated_at;
+    const marketError = cacheInvalidated ? null : existing.market_error;
+    const marketStatus = cacheInvalidated ? null : (currentPrice !== null && currentPrice !== undefined ? (currentPrice <= entryPrice ? 'openable' : 'waiting') : existing.market_status);
+    const timestamp = asIso(undefined, now());
+    db.prepare('UPDATE stock_entry_plans SET symbol = ?, name = ?, market = ?, entry_price = ?, target_percent = ?, notes = ?, current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?')
+      .run(symbol, name, market, entryPrice, targetPercent, notes, currentPrice, trailingPE, forwardPE, marketStatus, marketUpdatedAt, marketError, timestamp, id);
+  upsertStockSymbol({ symbol, name, market });
+  return mapStockEntryPlan(db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id));
+}
+
+function deleteStockEntryPlan(id) {
+  return db.prepare('DELETE FROM stock_entry_plans WHERE id = ?').run(id).changes > 0;
+}
+
+async function moveStockEntryPlanToPosition(id, input) {
+  const plan = db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id);
+  if (!plan) return null;
+  const quantity = normalizeStockNumber(input.quantity, '持仓数量');
+  const costPrice = input.costPrice === undefined ? plan.entry_price : normalizeStockNumber(input.costPrice, '成本价');
+  if (quantity <= 0) throw new Error('持仓数量必须大于 0。');
+  if (costPrice < 0) throw new Error('成本价不能为负数。');
+  const position = await createStockPosition({
+    symbol: plan.symbol,
+    name: plan.name,
+    market: plan.market,
+    quantity,
+    costPrice,
+    targetPercent: input.targetPercent === undefined ? plan.target_percent : input.targetPercent,
+    notes: typeof input.notes === 'string' ? input.notes : plan.notes
+  });
+  deleteStockEntryPlan(id);
+  return { position, plan: mapStockEntryPlan(plan) };
+}
+
+async function createStockPosition(input) {
+  const symbol = normalizeStockSymbol(input.symbol);
     const name = String(input.name || '').trim();
     const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
     if (!symbol) throw new Error('股票代码不能为空。');
@@ -437,21 +878,30 @@ function createContentHub(options = {}) {
     if (!market) throw new Error('市场必须是 US、HK 或 CN。');
     const quantity = normalizeStockNumber(input.quantity, '持仓数量');
     const costPrice = normalizeStockNumber(input.costPrice, '成本价');
-    const currentPrice = normalizeStockNumber(input.currentPrice, '现价');
     if (quantity <= 0) throw new Error('持仓数量必须大于 0。');
-    if (costPrice < 0 || currentPrice < 0) throw new Error('价格不能为负数。');
+    if (costPrice < 0) throw new Error('成本价不能为负数。');
     const targetPercent = normalizeTargetPercent(input.targetPercent);
     const timestamp = asIso(undefined, now());
-    const position = { id: createId(), symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp };
-    db.prepare('INSERT INTO stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp);
+    let currentPrice = 0;
+    let priceUpdatedAt = null;
+    if (market === 'US') {
+      if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
+      const quote = await quoteFetcher(symbol);
+      currentPrice = normalizeStockNumber(quote.currentPrice, 'Finnhub 现价');
+      if (currentPrice <= 0) throw new Error('Finnhub 未返回有效现价。');
+      priceUpdatedAt = quote.quotedAt || timestamp;
+    }
+    const position = { id: createId(), symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp, priceUpdatedAt };
+    db.prepare('INSERT INTO stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at, price_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp, position.priceUpdatedAt);
+    upsertStockSymbol(position);
     return position;
   }
 
   function updateStockPosition(id, input) {
     const existing = db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id);
     if (!existing) return null;
-    const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? input.symbol.trim() : existing.symbol;
+    const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? normalizeStockSymbol(input.symbol) : existing.symbol;
     const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
     const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : existing.market;
     const quantity = input.quantity === undefined ? existing.quantity : normalizeStockNumber(input.quantity, '持仓数量');
@@ -464,11 +914,162 @@ function createContentHub(options = {}) {
     const timestamp = asIso(undefined, now());
     db.prepare('UPDATE stock_positions SET symbol = ?, name = ?, market = ?, quantity = ?, cost_price = ?, current_price = ?, target_percent = ?, notes = ?, updated_at = ? WHERE id = ?')
       .run(symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes, timestamp, id);
+    upsertStockSymbol({ symbol, name, market });
     return mapStockPosition(db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id));
   }
 
   function deleteStockPosition(id) {
     return db.prepare('DELETE FROM stock_positions WHERE id = ?').run(id).changes > 0;
+  }
+
+  async function refreshStockPrices() {
+    if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
+    const positions = listStockPositions();
+    const skipped = positions.filter((position) => position.market !== 'US').map((position) => ({ id: position.id, symbol: position.symbol, reason: '当前仅支持刷新美股行情。' }));
+    const usPositions = positions.filter((position) => position.market === 'US');
+    const quotesBySymbol = new Map();
+    for (const position of usPositions) {
+      if (!quotesBySymbol.has(position.symbol)) quotesBySymbol.set(position.symbol, await quoteFetcher(position.symbol));
+    }
+    const timestamp = asIso(undefined, now());
+    const update = db.prepare('UPDATE stock_positions SET current_price = ?, trailing_pe = ?, forward_pe = ?, price_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
+    const updated = [];
+    for (const position of usPositions) {
+      const quote = quotesBySymbol.get(position.symbol);
+      let valuation = { trailingPE: null, forwardPE: null };
+      let valuationError = null;
+      if (typeof valuationFetcher === 'function') {
+        try { valuation = await valuationFetcher(position.symbol); } catch (error) { valuationError = error.message; }
+      }
+      update.run(quote.currentPrice, valuation.trailingPE ?? null, valuation.forwardPE ?? null, quote.quotedAt || timestamp, valuationError, timestamp, position.id);
+      updated.push({ id: position.id, symbol: position.symbol, currentPrice: quote.currentPrice, change: quote.change, changePercent: quote.changePercent, priceUpdatedAt: quote.quotedAt || timestamp, trailingPE: valuation.trailingPE ?? null, forwardPE: valuation.forwardPE ?? null, valuationError });
+    }
+    return { updated, skipped };
+  }
+
+  async function refreshStockEntryPlanMarketData() {
+    if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
+    const plans = listStockEntryPlans();
+    const skipped = plans.filter((plan) => plan.market !== 'US').map((plan) => ({ id: plan.id, symbol: plan.symbol, reason: '当前仅支持刷新美股行情与估值指标。' }));
+    const usPlans = plans.filter((plan) => plan.market === 'US');
+    const dataBySymbol = new Map();
+    const failedBySymbol = new Map();
+    for (const plan of usPlans) {
+      if (dataBySymbol.has(plan.symbol) || failedBySymbol.has(plan.symbol)) continue;
+      try {
+        const quote = await quoteFetcher(plan.symbol);
+        let valuation = { trailingPE: null, forwardPE: null };
+        let valuationError = null;
+        if (typeof valuationFetcher === 'function') {
+          try { valuation = await valuationFetcher(plan.symbol); } catch (error) { valuationError = error.message; }
+        }
+        dataBySymbol.set(plan.symbol, { quote, valuation, valuationError });
+      } catch (error) {
+        failedBySymbol.set(plan.symbol, error.message);
+      }
+    }
+    const timestamp = asIso(undefined, now());
+    const updateSuccess = db.prepare('UPDATE stock_entry_plans SET current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
+    const updateFailure = db.prepare('UPDATE stock_entry_plans SET market_error = ?, updated_at = ? WHERE id = ?');
+    const updated = usPlans.filter((plan) => dataBySymbol.has(plan.symbol)).map((plan) => {
+      const { quote, valuation, valuationError } = dataBySymbol.get(plan.symbol);
+      const marketUpdatedAt = quote.quotedAt || timestamp;
+      const status = quote.currentPrice <= plan.entryPrice ? 'openable' : 'waiting';
+      const trailingPE = valuation?.trailingPE ?? null;
+      const forwardPE = valuation?.forwardPE ?? null;
+      updateSuccess.run(quote.currentPrice, trailingPE, forwardPE, status, marketUpdatedAt, valuationError, timestamp, plan.id);
+      return { id: plan.id, symbol: plan.symbol, currentPrice: quote.currentPrice, priceUpdatedAt: marketUpdatedAt, trailingPE, forwardPE, valuationError, status };
+    });
+    const failed = usPlans.filter((plan) => failedBySymbol.has(plan.symbol)).map((plan) => {
+      const reason = failedBySymbol.get(plan.symbol);
+      updateFailure.run(reason, timestamp, plan.id);
+      return { id: plan.id, symbol: plan.symbol, reason };
+    });
+    return { updated, skipped, failed };
+  }
+
+  function getStockAlertRules() {
+    const rows = db.prepare('SELECT id, payload FROM stock_alert_rules ORDER BY rowid').all();
+    if (!rows.length) {
+      const timestamp = asIso(undefined, now());
+      const insert = db.prepare('INSERT INTO stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?)');
+      for (const rule of DEFAULT_STOCK_ALERT_RULES) insert.run(rule.id, JSON.stringify(rule), timestamp);
+      return DEFAULT_STOCK_ALERT_RULES;
+    }
+    return rows.map((row) => parseJson(row.payload, null)).filter(Boolean);
+  }
+
+  function setStockAlertRules(input) {
+    if (!Array.isArray(input?.rules) || input.rules.length !== DEFAULT_STOCK_ALERT_RULES.length) throw new Error('预警规则格式无效。');
+    const defaultsById = new Map(DEFAULT_STOCK_ALERT_RULES.map((rule) => [rule.id, rule]));
+    const rules = input.rules.map((rule) => {
+      const base = defaultsById.get(String(rule.id));
+      if (!base) throw new Error('预警规则标识无效。');
+      const uvxyThreshold = Number(rule.uvxyThreshold);
+      const marketThreshold = Number(rule.marketThreshold);
+      const twoDayThreshold = rule.twoDayThreshold === null || rule.twoDayThreshold === '' ? null : Number(rule.twoDayThreshold);
+      if (![uvxyThreshold, marketThreshold].every(Number.isFinite) || (twoDayThreshold !== null && !Number.isFinite(twoDayThreshold))) throw new Error('预警阈值必须是数字。');
+      return { ...base, level: String(rule.level || base.level).trim() || base.level, uvxyThreshold, marketThreshold, twoDayThreshold, message: String(rule.message || '').trim() || base.message, enabled: rule.enabled !== false };
+    });
+    const timestamp = asIso(undefined, now());
+    const update = db.prepare('INSERT INTO stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at');
+    const transaction = db.transaction(() => rules.forEach((rule) => update.run(rule.id, JSON.stringify(rule), timestamp)));
+    transaction();
+    return rules;
+  }
+
+  async function evaluateStockMarketAlerts(quotes) {
+    const validQuotes = new Map((quotes || []).filter((quote) => Number.isFinite(Number(quote.changePercent))).map((quote) => [quote.symbol, quote]));
+    const uvxy = validQuotes.get('UVXY');
+    if (!uvxy) return { triggered: [], deliveryErrors: [] };
+    const tradingDate = new Date(uvxy.quotedAt || now()).toISOString().slice(0, 10);
+    const snapshot = db.prepare('INSERT INTO stock_alert_snapshots(symbol, trading_date, change_percent, captured_at) VALUES (?, ?, ?, ?) ON CONFLICT(symbol, trading_date) DO UPDATE SET change_percent = excluded.change_percent, captured_at = excluded.captured_at');
+    const timestamp = asIso(undefined, now());
+    for (const symbol of ['UVXY', 'VOO', 'QQQ']) {
+      const quote = validQuotes.get(symbol);
+      if (quote) snapshot.run(symbol, tradingDate, Number(quote.changePercent), timestamp);
+    }
+    const previous = db.prepare("SELECT change_percent FROM stock_alert_snapshots WHERE symbol = 'UVXY' AND trading_date < ? ORDER BY trading_date DESC LIMIT 1").get(tradingDate);
+    const twoDayChange = previous && Number.isFinite(Number(previous.change_percent)) ? Number(uvxy.changePercent) + Number(previous.change_percent) : null;
+    const rules = getStockAlertRules();
+    const triggered = [];
+    const deliveryErrors = [];
+    for (const rule of rules) {
+      const marketCondition = ['VOO', 'QQQ'].some((symbol) => Number(validQuotes.get(symbol)?.changePercent) <= rule.marketThreshold);
+      const twoDayCondition = rule.twoDayThreshold !== null && twoDayChange !== null && twoDayChange >= rule.twoDayThreshold;
+      if (!rule.enabled || Number(uvxy.changePercent) < rule.uvxyThreshold || (!marketCondition && !twoDayCondition)) continue;
+      const alert = { ...rule, tradingDate, uvxyChangePercent: Number(uvxy.changePercent), marketCondition, twoDayChange, pushed: false };
+      triggered.push(alert);
+      const delivered = db.prepare('SELECT 1 FROM stock_alert_deliveries WHERE rule_id = ? AND trading_date = ?').get(rule.id, tradingDate);
+      if (delivered) { alert.pushed = true; continue; }
+      try {
+        const configured = typeof barkSettings?.get === 'function' && (await barkSettings.get()).configured;
+        if (!configured || typeof barkPusher !== 'function') { deliveryErrors.push({ ruleId: rule.id, error: 'Bark 未配置。' }); continue; }
+        const marketText = ['VOO', 'QQQ'].map((symbol) => `${symbol} ${validQuotes.get(symbol)?.changePercent === undefined ? '—' : `${Number(validQuotes.get(symbol).changePercent).toFixed(2)}%`}`).join('，');
+        await barkPusher(`市场预警 · ${rule.level}`, `${rule.message}\nUVXY ${Number(uvxy.changePercent).toFixed(2)}%，${marketText}${twoDayChange === null ? '' : `\nUVXY 两日累计 ${twoDayChange.toFixed(2)}%`}`);
+        db.prepare('INSERT INTO stock_alert_deliveries(rule_id, trading_date, pushed_at) VALUES (?, ?, ?)').run(rule.id, tradingDate, timestamp);
+        alert.pushed = true;
+      } catch (error) { deliveryErrors.push({ ruleId: rule.id, error: error.message }); }
+    }
+    return { triggered, deliveryErrors };
+  }
+
+  async function getStockMarketQuotes(symbols) {
+    if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
+    const normalizedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+      .map((symbol) => String(symbol || '').trim().toUpperCase().split(':').pop())
+      .filter(Boolean))];
+    const quotes = [];
+    for (const symbol of normalizedSymbols) {
+      try {
+        const quote = await quoteFetcher(symbol);
+        quotes.push({ ...quote, symbol });
+      } catch (error) {
+        quotes.push({ symbol, error: error.message });
+      }
+    }
+    const alerts = await evaluateStockMarketAlerts(quotes);
+    return { quotes, updatedAt: new Date().toISOString(), alerts };
   }
 
   function getStockSettings() {
@@ -679,25 +1280,26 @@ function createContentHub(options = {}) {
     for (const schedule of listSchedules().filter((item) => item.enabled)) {
       const local = localDateTime(currentTime, schedule.timeZone);
       if (local.weekday !== schedule.weekday || local.time < schedule.time) continue;
+      const operatingDate = nextOperatingDate(local.date);
       const alreadyStarted = db.prepare(`SELECT id FROM generation_runs
-        WHERE operating_date = ? AND trigger_type IN ('scheduled', 'catchUp')`).get(local.date);
+        WHERE operating_date = ? AND trigger_type IN ('scheduled', 'catchUp')`).get(operatingDate);
       if (alreadyStarted) continue;
 
       const runId = createId();
       const startedAt = asIso(undefined, currentTime);
       db.prepare(`INSERT INTO generation_runs(id, operating_date, trigger_type, status, error_message, created_at, completed_at)
-        VALUES (?, ?, 'scheduled', 'started', NULL, ?, NULL)`).run(runId, local.date, startedAt);
+        VALUES (?, ?, 'scheduled', 'started', NULL, ?, NULL)`).run(runId, operatingDate, startedAt);
       try {
         const candidates = await generator({
           trigger: 'scheduled',
-          operatingDate: local.date,
+          operatingDate,
           profile: getProfile(),
           materials: listMaterials().filter((material) => !material.archivedAt),
           preferences: getStyle(),
           archiveProfile: getArchiveProfile().objective
         });
         if (!Array.isArray(candidates) || candidates.length !== 10) throw new Error('定时生成必须返回完整的十条候选。');
-        const pack = createContentPack({ trigger: 'scheduled', operatingDate: local.date, candidates, createdAt: startedAt });
+        const pack = createContentPack({ trigger: 'scheduled', operatingDate, candidates, createdAt: startedAt });
         db.prepare(`UPDATE generation_runs SET status = 'succeeded', completed_at = ? WHERE id = ?`).run(asIso(undefined, currentTime), runId);
         created.push(pack);
       } catch (error) {
@@ -707,11 +1309,11 @@ function createContentHub(options = {}) {
     }
     return { created };
   }
-  async function runManualGeneration(generator, currentTime = now()) {
+  async function runManualGeneration(generator, currentTime = now(), targetOperatingDate) {
     if (typeof generator !== 'function') throw new Error('内容生成器不可用。');
     const runId = createId();
     const createdAt = asIso(undefined, currentTime);
-    const operatingDate = createdAt.slice(0, 10);
+    const operatingDate = targetOperatingDate ? normalizeOperatingDate(targetOperatingDate) : createdAt.slice(0, 10);
     db.prepare(`INSERT INTO generation_runs(id, operating_date, trigger_type, status, error_message, created_at, completed_at)
       VALUES (?, ?, 'manual', 'started', NULL, ?, NULL)`).run(runId, operatingDate, createdAt);
     try {
@@ -737,6 +1339,8 @@ function createContentHub(options = {}) {
       tone: row.tone,
       recommendation: row.recommendation,
       sourceMaterialIds: parseJson(row.source_material_ids, []),
+      suggestedPublishTime: row.suggested_publish_time,
+      plannedPublishTime: row.planned_publish_time,
       createdAt: row.created_at
     };
   }
@@ -766,17 +1370,31 @@ function createContentHub(options = {}) {
     const insert = db.transaction(() => {
       db.prepare('INSERT INTO content_packs(id, trigger_type, operating_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
         .run(pack.id, trigger, pack.operatingDate, timestamp, timestamp);
-      const statement = db.prepare(`INSERT INTO content_candidates(id, pack_id, content, topic, format, language, tone, recommendation, source_material_ids, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const statement = db.prepare(`INSERT INTO content_candidates(
+        id, pack_id, content, topic, format, language, tone, recommendation, source_material_ids, suggested_publish_time, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (const item of candidates) {
         const content = String(item.content || '').trim();
         if (!content) throw new Error('候选内容不能为空。');
-        statement.run(createId(), pack.id, content, String(item.topic || '未分类').trim(), String(item.format || 'post').trim(), String(item.language || 'zh').trim(), String(item.tone || 'direct').trim(), item.recommendation === 'explore' ? 'explore' : 'recommended', JSON.stringify(Array.isArray(item.sourceMaterialIds) ? item.sourceMaterialIds : []), timestamp);
+        statement.run(createId(), pack.id, content, String(item.topic || '未分类').trim(), String(item.format || 'post').trim(), String(item.language || 'zh').trim(), String(item.tone || 'direct').trim(), item.recommendation === 'explore' ? 'explore' : 'recommended', JSON.stringify(Array.isArray(item.sourceMaterialIds) ? item.sourceMaterialIds : []), normalizePublishTime(item.suggestedPublishTime, '建议发布时间'), timestamp);
       }
     });
     insert();
     return getPack(pack.id);
   }
+  function setCandidatePublicationPlan(candidateId, plannedPublishTime) {
+    const candidate = db.prepare(`SELECT c.*, p.operating_date
+      FROM content_candidates c JOIN content_packs p ON p.id = c.pack_id
+      WHERE c.id = ?`).get(candidateId);
+    if (!candidate) return null;
+
+    const time = normalizePublishTime(plannedPublishTime, '计划发布时间');
+    if (time && !candidate.operating_date) throw new Error('该候选没有对应的发布日期。');
+    db.prepare('UPDATE content_candidates SET planned_publish_time = ? WHERE id = ?').run(time, candidateId);
+    if (time) createCandidateEvent(candidateId, 'queued');
+    return mapCandidate(db.prepare('SELECT * FROM content_candidates WHERE id = ?').get(candidateId));
+  }
+
   function createCandidateEvent(candidateId, type) {
     if (!['selected', 'copied', 'queued', 'published'].includes(type)) throw new Error('候选行为无效。');
     const candidate = db.prepare('SELECT id FROM content_candidates WHERE id = ?').get(candidateId);
@@ -785,6 +1403,50 @@ function createContentHub(options = {}) {
     db.prepare('INSERT OR IGNORE INTO candidate_events(id, candidate_id, event_type, created_at) VALUES (?, ?, ?, ?)')
       .run(createId(), candidateId, type, timestamp);
     return { candidateId, type, createdAt: timestamp };
+  }
+
+  function mapContentFeedbackArchive(row) {
+    return {
+      id: row.id,
+      candidateId: row.candidate_id,
+      content: row.content,
+      topic: row.topic,
+      format: row.format,
+      language: row.language,
+      tone: row.tone,
+      operatingDate: row.operating_date,
+      plannedPublishTime: row.planned_publish_time,
+      performance: row.performance,
+      archivedAt: row.archived_at,
+      assessedAt: row.assessed_at
+    };
+  }
+
+  function archiveCandidateCopy(candidateId) {
+    const candidate = db.prepare(`SELECT c.*, p.operating_date
+      FROM content_candidates c JOIN content_packs p ON p.id = c.pack_id
+      WHERE c.id = ?`).get(candidateId);
+    if (!candidate) return null;
+    const timestamp = asIso(undefined, now());
+    db.prepare(`INSERT INTO content_feedback_archive(
+      id, candidate_id, content, topic, format, language, tone, operating_date, planned_publish_time, performance, archived_at, assessed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+      ON CONFLICT(candidate_id) DO NOTHING`)
+      .run(createId(), candidate.id, candidate.content, candidate.topic, candidate.format, candidate.language, candidate.tone, candidate.operating_date, candidate.planned_publish_time, timestamp);
+    createCandidateEvent(candidateId, 'copied');
+    return mapContentFeedbackArchive(db.prepare('SELECT * FROM content_feedback_archive WHERE candidate_id = ?').get(candidateId));
+  }
+
+  function listContentFeedbackArchive() {
+    return db.prepare('SELECT * FROM content_feedback_archive ORDER BY archived_at DESC').all().map(mapContentFeedbackArchive);
+  }
+
+  function setContentFeedbackPerformance(archiveId, performance) {
+    if (!['good', 'poor'].includes(performance)) throw new Error('流量表现只能标记为好或一般。');
+    const timestamp = asIso(undefined, now());
+    db.prepare('UPDATE content_feedback_archive SET performance = ?, assessed_at = ? WHERE id = ?').run(performance, timestamp, archiveId);
+    const entry = db.prepare('SELECT * FROM content_feedback_archive WHERE id = ?').get(archiveId);
+    return entry ? mapContentFeedbackArchive(entry) : null;
   }
 
   function listPacks(filters = {}) {
@@ -884,16 +1546,27 @@ function createContentHub(options = {}) {
   }
 
   function getStyle() {
-    const weights = { selected: 1, copied: 2, queued: 3, published: 3 };
+    const weights = { selected: 1, copied: 0, queued: 3, published: 3 };
     const replyRows = db.prepare(`SELECT s.language, s.style, s.human_tone AS humanTone, e.event_type
       FROM reply_draft_events e JOIN reply_drafts d ON d.id = e.draft_id JOIN reply_sessions s ON s.id = d.session_id`).all();
     const candidateRows = db.prepare(`SELECT c.topic, c.format, c.language, c.tone, e.event_type
       FROM candidate_events e JOIN content_candidates c ON c.id = e.candidate_id`).all();
+    const feedbackRows = db.prepare(`SELECT topic, format, language, tone, performance
+      FROM content_feedback_archive WHERE performance != 'pending'`).all();
     const replyEntries = preferenceEntries(replyRows, ['style', 'language', 'humanTone'], weights);
     const originalEntries = preferenceEntries(candidateRows, ['topic', 'format', 'language', 'tone'], weights);
+    const feedbackEntries = (performance) => {
+      const entries = preferenceEntries(
+        feedbackRows.filter((row) => row.performance === performance).map((row) => ({ ...row, event_type: 'feedback' })),
+        ['topic', 'format', 'language', 'tone'],
+        { feedback: 1 }
+      );
+      return { topics: entries.topic, formats: entries.format, languages: entries.language, tones: entries.tone };
+    };
     return {
       profile: getProfile(),
       originalPreferences: { topics: originalEntries.topic, formats: originalEntries.format, languages: originalEntries.language, tones: originalEntries.tone },
+      archiveFeedback: { good: feedbackEntries('good'), poor: feedbackEntries('poor') },
       replyPreferences: {
         styles: replyEntries.style,
         languages: replyEntries.language,
@@ -903,6 +1576,60 @@ function createContentHub(options = {}) {
         humanTone: Object.fromEntries(replyEntries.humanTone.map((item) => [item.value, item.weight]))
       }
     };
+  }
+
+  function dashboardDateKey(value = now()) {
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value));
+    return `${parts.find((part) => part.type === 'year').value}-${parts.find((part) => part.type === 'month').value}-${parts.find((part) => part.type === 'day').value}`;
+  }
+
+  function lunarLabelForDate(dateKey) {
+    try {
+      const [year, month, day] = dateKey.split('-').map(Number);
+      const lunar = Solar.fromYmd(year, month, day).getLunar();
+      return `农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function dashboardCalendar(tasks, expiringItems) {
+    const events = [
+      ...tasks.filter((task) => task.dueDate).map((task) => ({ id: `task-${task.id}`, date: dashboardDateKey(task.dueDate), time: null, title: task.title, type: 'task', status: task.status, action: { label: '去处理', page: 'tasks' } })),
+      ...expiringItems.filter((item) => item.dueDate).map((item) => ({ id: `expiring-${item.id}`, date: dashboardDateKey(item.dueDate), time: item.dueAt ? new Date(item.dueAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }) : null, title: item.name, type: 'expiring', status: item.reminderStatus, action: { label: '去查看', page: 'expiring' } })),
+    ];
+    const eventDates = new Set(events.map((event) => event.date));
+    const today = dashboardDateKey();
+    const todayDate = new Date(`${today}T00:00:00+08:00`);
+    const days = Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(todayDate);
+      date.setDate(date.getDate() + index - 14);
+      const dateKey = dashboardDateKey(date);
+      return { date: dateKey, lunarLabel: lunarLabelForDate(dateKey), hasEvents: eventDates.has(dateKey) };
+    });
+    return { timezone: 'Asia/Shanghai', days, events };
+  }
+
+  function dashboardPrompt(tasks, expiringItems) {
+    const overdue = expiringItems.find((item) => item.reminderStatus === 'overdue');
+    if (overdue) return { kind: 'expiring', priority: 100, title: `先处理已逾期事项：${overdue.name}`, reason: '有一项到期提醒已经逾期', action: { label: '去查看', page: 'expiring' } };
+    const today = dashboardDateKey();
+    const dueToday = expiringItems.find((item) => dashboardDateKey(item.dueDate) === today);
+    if (dueToday) return { kind: 'expiring', priority: 100, title: `今天先处理：${dueToday.name}`, reason: '这项到期提醒今天到期', action: { label: '去查看', page: 'expiring' } };
+    const task = tasks[0];
+    if (task) return { kind: 'tasks', priority: 20, title: `下一步处理：${task.title}`, reason: task.dueDate ? `待办截止日期为 ${task.dueDate}` : '收集箱中有一项未完成待办', action: { label: '去处理', page: 'tasks' } };
+    return null;
+  }
+
+  function dashboardPromptCandidates(tasks, expiringItems) {
+    const prompts = [];
+    const addExpiring = (items, priority, titlePrefix, reason) => items.forEach((item) => prompts.push({ kind: 'expiring', priority, title: `${titlePrefix}：${item.name}`, reason, action: { label: '去查看', page: 'expiring' } }));
+    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'overdue'), 100, '先处理已逾期事项', '有一项到期提醒已经逾期');
+    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'due'), 90, '今天先处理', '这项到期提醒今天到期');
+    tasks.forEach((task) => prompts.push({ kind: 'tasks', priority: 20, title: `下一步处理：${task.title}`, reason: task.dueDate ? `待办截止日期为 ${task.dueDate}` : '收集箱中有一项未完成待办', action: { label: '去处理', page: 'tasks' } }));
+    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'upcoming'), 10, '提前看一眼', '这项到期提醒即将到期');
+    return prompts.length ? prompts : [{ kind: 'encouragement', priority: 0, title: '今天也留一点时间给重要的事', reason: '当前没有待处理的待办或到期提醒', action: { label: '查看工作台', page: 'dashboard-v2' } }];
   }
 
   function getDashboard() {
@@ -916,7 +1643,12 @@ function createContentHub(options = {}) {
     const databaseSizeBytes = fs.statSync(databasePath).size;
     const backupSizeBytes = directorySize(backupDirectory);
     const frontendSizeBytes = directorySize(staticDirectory);
-    return { profile: getProfile(), materialCount: materialCount(), contentPackCount: packs.length, replySessionCount: db.prepare('SELECT COUNT(*) AS count FROM reply_sessions').get().count, expiringCount: packs.filter((pack) => pack.retentionStatus === 'expired').length, recentPacks: packs.slice(0, 5), tasks, expiringItems, pendingCandidateCount, taskStats: { open: tasks.length, completed: completedTaskCount }, candidateStats: { active: pendingCandidateCount, expired: expiredCandidateCount }, materialStats: { active: materialCount(), archived: archivedMaterialCount }, databasePath, databaseSizeBytes, dataLocations: { database: databasePath, backups: backupDirectory, frontend: staticDirectory, keychain: 'macOS Keychain (com.x-assistant.local-hub)' }, storageBreakdown: [{ key: 'sqlite', label: 'SQLite 数据库', bytes: databaseSizeBytes }, { key: 'backups', label: '加密备份', bytes: backupSizeBytes }, { key: 'frontend', label: '工作台前端', bytes: frontendSizeBytes }] };
+    const calendar = dashboardCalendar(tasks, expiringItems);
+    const personalizedPrompts = dashboardPromptCandidates(tasks, expiringItems);
+    const personalizedPrompt = personalizedPrompts[0] || null;
+    const menstrualSettings = getMenstrualSettings();
+    const menstrualCycles = menstrualSettings.menstrualEnabled ? listMenstrualCycles() : [];
+    return { profile: getProfile(), materialCount: materialCount(), contentPackCount: packs.length, replySessionCount: db.prepare('SELECT COUNT(*) AS count FROM reply_sessions').get().count, expiringCount: packs.filter((pack) => pack.retentionStatus === 'expired').length, recentPacks: packs.slice(0, 5), tasks, expiringItems, calendar, stockHistory: { available: false, points: [] }, personalizedPrompt, personalizedPrompts, privacy: menstrualSettings, menstrualPrediction: null, personalizedSources: { tasks: { configured: true, available: tasks.length > 0 }, expiring: { configured: true, available: expiringItems.length > 0 }, menstrual: { configured: menstrualSettings.menstrualEnabled, available: menstrualCycles.length > 0 }, stocks: { configured: true, available: false }, specialDays: { configured: false, available: false } }, pendingCandidateCount, taskStats: { open: tasks.length, completed: completedTaskCount }, candidateStats: { active: pendingCandidateCount, expired: expiredCandidateCount }, materialStats: { active: materialCount(), archived: archivedMaterialCount }, databasePath, databaseSizeBytes, dataLocations: { database: databasePath, backups: backupDirectory, frontend: staticDirectory, keychain: 'macOS Keychain (com.x-assistant.local-hub)' }, storageBreakdown: [{ key: 'sqlite', label: 'SQLite 数据库', bytes: databaseSizeBytes }, { key: 'backups', label: '加密备份', bytes: backupSizeBytes }, { key: 'frontend', label: '工作台前端', bytes: frontendSizeBytes }] };
   }
 
   async function readRawBody(request) {
@@ -1086,6 +1818,17 @@ function createContentHub(options = {}) {
       if (request.method === 'GET' && pathname === '/v1/bark-settings') {
         return sendJson(response, 200, typeof barkSettings?.get === 'function' ? await barkSettings.get() : { configured: false, serverUrl: 'https://api.day.app' });
       }
+      if (request.method === 'GET' && pathname === '/v1/finnhub-settings') {
+        return sendJson(response, 200, typeof finnhubSettings?.get === 'function' ? await finnhubSettings.get() : { configured: false, provider: 'Finnhub' });
+      }
+      if (request.method === 'PUT' && pathname === '/v1/finnhub-settings') {
+        if (typeof finnhubSettings?.set !== 'function') return sendJson(response, 503, { error: 'Finnhub 配置不可用。' });
+        return sendJson(response, 200, { settings: await finnhubSettings.set(await parseRequest(request)) });
+      }
+      if (request.method === 'POST' && pathname === '/v1/finnhub-settings/test') {
+        if (typeof finnhubSettings?.test !== 'function') return sendJson(response, 503, { error: 'Finnhub 连接检测不可用。' });
+        return sendJson(response, 200, await finnhubSettings.test(await parseRequest(request)));
+      }
       if (request.method === 'PUT' && pathname === '/v1/bark-settings') {
         if (typeof barkSettings?.set !== 'function') return sendJson(response, 503, { error: 'Bark 配置不可用。' });
         return sendJson(response, 200, { settings: await barkSettings.set(await parseRequest(request)) });
@@ -1124,6 +1867,24 @@ function createContentHub(options = {}) {
         const item = confirmExpiringItem(expiringConfirmMatch[1]);
         return item ? sendJson(response, 200, { item }) : sendJson(response, 404, { error: '到期项不存在。' });
       }
+      if (request.method === 'GET' && pathname === '/v1/menstrual-settings') return sendJson(response, 200, { settings: getMenstrualSettings() });
+      if (request.method === 'PUT' && pathname === '/v1/menstrual-settings') return sendJson(response, 200, { settings: setMenstrualSettings(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/menstrual-cycles') return sendJson(response, 200, { cycles: listMenstrualCycles() });
+      if (request.method === 'POST' && pathname === '/v1/menstrual-cycles') return sendJson(response, 201, { cycle: createMenstrualCycle(await parseRequest(request)) });
+      const menstrualCycleMatch = pathname.match(/^\/v1\/menstrual-cycles\/([^/]+)$/);
+      if (menstrualCycleMatch && request.method === 'PATCH') {
+        const cycle = updateMenstrualCycle(menstrualCycleMatch[1], await parseRequest(request));
+        return cycle ? sendJson(response, 200, { cycle }) : sendJson(response, 404, { error: '经期记录不存在。' });
+      }
+      if (menstrualCycleMatch && request.method === 'DELETE') return deleteMenstrualCycle(menstrualCycleMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '经期记录不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/menstrual-mood-logs') return sendJson(response, 200, { logs: listMenstrualMoodLogs() });
+      if (request.method === 'POST' && pathname === '/v1/menstrual-mood-logs') return sendJson(response, 201, { log: createMenstrualMoodLog(await parseRequest(request)) });
+      const menstrualMoodLogMatch = pathname.match(/^\/v1\/menstrual-mood-logs\/([^/]+)$/);
+      if (menstrualMoodLogMatch && request.method === 'PATCH') {
+        const moodLog = updateMenstrualMoodLog(menstrualMoodLogMatch[1], await parseRequest(request));
+        return moodLog ? sendJson(response, 200, { log: moodLog }) : sendJson(response, 404, { error: '情绪记录不存在。' });
+      }
+      if (menstrualMoodLogMatch && request.method === 'DELETE') return deleteMenstrualMoodLog(menstrualMoodLogMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '情绪记录不存在。' });
       if (request.method === 'GET' && pathname === '/v1/tasks') return sendJson(response, 200, { tasks: listTasks(url.searchParams.get('status') || 'open') });
       if (request.method === 'POST' && pathname === '/v1/tasks') return sendJson(response, 201, { task: createTask(await parseRequest(request)) });
       const taskMatch = pathname.match(/^\/v1\/tasks\/([^/]+)$/);
@@ -1132,14 +1893,37 @@ function createContentHub(options = {}) {
         return task ? sendJson(response, 200, { task }) : sendJson(response, 404, { error: '待办不存在。' });
       }
       if (taskMatch && request.method === 'DELETE') return deleteTask(taskMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '待办不存在。' });
+      if (request.method === 'POST' && pathname === '/v1/kindle/sync') return sendJson(response, 200, await kindleSync(await parseRequest(request)));
+      if (request.method === 'GET' && pathname === '/v1/stock-entry-plans') return sendJson(response, 200, { plans: listStockEntryPlans() });
+      if (request.method === 'POST' && pathname === '/v1/stock-entry-plans/refresh-market-data') return sendJson(response, 200, await refreshStockEntryPlanMarketData());
+      if (request.method === 'POST' && pathname === '/v1/stock-entry-plans') return sendJson(response, 201, { plan: createStockEntryPlan(await parseRequest(request)) });
+      const stockEntryPlanMatch = pathname.match(/^\/v1\/stock-entry-plans\/([^/]+)$/);
+      const stockEntryPlanOpenMatch = pathname.match(/^\/v1\/stock-entry-plans\/([^/]+)\/open-position$/);
+      if (stockEntryPlanOpenMatch && request.method === 'POST') {
+        const result = await moveStockEntryPlanToPosition(stockEntryPlanOpenMatch[1], await parseRequest(request));
+        return result ? sendJson(response, 201, result) : sendJson(response, 404, { error: '待开仓股票不存在。' });
+      }
+      if (stockEntryPlanMatch && request.method === 'PATCH') {
+        const plan = updateStockEntryPlan(stockEntryPlanMatch[1], await parseRequest(request));
+        return plan ? sendJson(response, 200, { plan }) : sendJson(response, 404, { error: '待开仓股票不存在。' });
+      }
+      if (stockEntryPlanMatch && request.method === 'DELETE') return deleteStockEntryPlan(stockEntryPlanMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '待开仓股票不存在。' });
       if (request.method === 'GET' && pathname === '/v1/stock-positions') return sendJson(response, 200, { positions: listStockPositions() });
-      if (request.method === 'POST' && pathname === '/v1/stock-positions') return sendJson(response, 201, { position: createStockPosition(await parseRequest(request)) });
+      if (request.method === 'POST' && pathname === '/v1/stock-positions/refresh-prices') return sendJson(response, 200, await refreshStockPrices());
+      if (request.method === 'POST' && pathname === '/v1/stock-positions') return sendJson(response, 201, { position: await createStockPosition(await parseRequest(request)) });
       const stockPositionMatch = pathname.match(/^\/v1\/stock-positions\/([^/]+)$/);
       if (stockPositionMatch && request.method === 'PATCH') {
         const position = updateStockPosition(stockPositionMatch[1], await parseRequest(request));
         return position ? sendJson(response, 200, { position }) : sendJson(response, 404, { error: '持仓不存在。' });
       }
       if (stockPositionMatch && request.method === 'DELETE') return deleteStockPosition(stockPositionMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '持仓不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/stock-symbols') return sendJson(response, 200, { symbols: listStockSymbols() });
+      if (request.method === 'GET' && pathname === '/v1/stock-market/alerts') return sendJson(response, 200, { rules: getStockAlertRules() });
+      if (request.method === 'PUT' && pathname === '/v1/stock-market/alerts') return sendJson(response, 200, { rules: setStockAlertRules(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/stock-market') {
+        const symbols = String(url.searchParams.get('symbols') || '').split(',');
+        return sendJson(response, 200, await getStockMarketQuotes(symbols));
+      }
       if (request.method === 'GET' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: getStockSettings() });
       if (request.method === 'PUT' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: setStockSettings(await parseRequest(request)) });
       if (request.method === 'PUT' && pathname === '/v1/profile') return sendJson(response, 200, { profile: setProfile(await parseRequest(request)) });
@@ -1153,16 +1937,33 @@ function createContentHub(options = {}) {
       }
       if (request.method === 'POST' && pathname === '/v1/generation-runs') {
         if (typeof generator !== 'function') return sendJson(response, 503, { error: '模型服务尚未配置。' });
-        return sendJson(response, 201, { pack: await runManualGeneration(generator) });
+        const input = await parseRequest(request);
+        return sendJson(response, 201, { pack: await runManualGeneration(generator, now(), input.operatingDate) });
       }
       if (request.method === 'GET' && pathname === '/v1/content-packs') return sendJson(response, 200, { packs: listPacks(Object.fromEntries(url.searchParams)) });
       if (request.method === 'POST' && pathname === '/v1/content-packs') return sendJson(response, 201, { pack: createContentPack(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/content-feedback-archive') return sendJson(response, 200, { entries: listContentFeedbackArchive() });
       const packMatch = pathname.match(/^\/v1\/content-packs\/([^/]+)$/);
       if (request.method === 'GET' && packMatch) {
         const pack = getPack(packMatch[1]);
         return pack ? sendJson(response, 200, { pack }) : sendJson(response, 404, { error: '内容包不存在。' });
       }
       if (request.method === 'POST' && pathname === '/v1/reply-sessions') return sendJson(response, 201, { session: createReplySession(await parseRequest(request)) });
+      const candidatePlanMatch = pathname.match(/^\/v1\/content-candidates\/([^/]+)\/publication-plan$/);
+      if (request.method === 'PUT' && candidatePlanMatch) {
+        const candidate = setCandidatePublicationPlan(candidatePlanMatch[1], (await parseRequest(request)).plannedPublishTime);
+        return candidate ? sendJson(response, 200, { candidate }) : sendJson(response, 404, { error: '内容候选不存在。' });
+      }
+      const candidateArchiveMatch = pathname.match(/^\/v1\/content-candidates\/([^/]+)\/archive$/);
+      if (request.method === 'POST' && candidateArchiveMatch) {
+        const entry = archiveCandidateCopy(candidateArchiveMatch[1]);
+        return entry ? sendJson(response, 201, { entry }) : sendJson(response, 404, { error: '内容候选不存在。' });
+      }
+      const contentFeedbackMatch = pathname.match(/^\/v1\/content-feedback-archive\/([^/]+)$/);
+      if (request.method === 'PUT' && contentFeedbackMatch) {
+        const entry = setContentFeedbackPerformance(contentFeedbackMatch[1], (await parseRequest(request)).performance);
+        return entry ? sendJson(response, 200, { entry }) : sendJson(response, 404, { error: '归档内容不存在。' });
+      }
       const candidateEventMatch = pathname.match(/^\/v1\/content-candidates\/([^/]+)\/events$/);
       if (request.method === 'POST' && candidateEventMatch) {
         const event = createCandidateEvent(candidateEventMatch[1], (await parseRequest(request)).type);
@@ -1198,7 +1999,14 @@ function createContentHub(options = {}) {
     runExpiringReminders,
     runManualGeneration,
     setSchedule,
-    listSchedules
+    listSchedules,
+    createContentPack,
+    setCandidatePublicationPlan,
+    archiveCandidateCopy,
+    listContentFeedbackArchive,
+    setContentFeedbackPerformance,
+    getStyle,
+    runKindleSync: kindleSync
   };
 }
 

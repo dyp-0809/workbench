@@ -1,0 +1,14 @@
+---
+description: Magic UI 与 Motion 动效来源规则
+globs: **/*.{js,jsx,ts,tsx,css}
+alwaysApply: true
+---
+
+# 动效来源
+
+- 动效相关优先从 Magic UI 查找可复用组件和实现思路：https://magicui.design/
+- 交互动画、手势、布局转场和状态编排优先使用 Motion.dev：https://motion.dev/
+- 项目使用 npm 包 `motion`，React 入口为 `motion/react`；不要重新引入 `framer-motion`。
+- Magic UI 组件按官方方式复制到项目源码后，再按现有 Appica 组件和语义 token 适配，不把它当作黑盒运行时组件库。
+- 动效必须服务于状态反馈、层级、转场或操作结果；支持 `prefers-reduced-motion`，禁止无目的循环、粒子和装饰性动画。
+- 实现前先查看 Magic UI 和 Motion 官方文档；交付时说明动效目的、静态降级和键盘/触摸行为。

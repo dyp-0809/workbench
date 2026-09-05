@@ -9,6 +9,49 @@ function buildZip(files) {
   return zip.toBuffer();
 }
 
+function crc32(buffer) {
+  let table = [];
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c >>> 0; }
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// X 官方归档由流式写入器打包：本地头设置数据描述符标志（bit 3），
+// 且描述符中的尺寸字段可能与中央目录不一致。adm-zip 0.5.x 对此误判为损坏
+// （上游 #533/#548/#554，0.6.0 起改为信任中央目录 CRC），此构造用于回归防护。
+function buildStreamedZip(name, contentBuffer) {
+  const nameBuffer = Buffer.from(name, 'utf8');
+  const localHeader = Buffer.alloc(30);
+  localHeader.writeUInt32LE(0x04034b50, 0);
+  localHeader.writeUInt16LE(20, 4);
+  localHeader.writeUInt16LE(0x0008, 6);
+  localHeader.writeUInt32LE(crc32(contentBuffer), 14);
+  localHeader.writeUInt16LE(nameBuffer.length, 26);
+  const descriptor = Buffer.alloc(16);
+  descriptor.writeUInt32LE(0x08074b50, 0);
+  descriptor.writeUInt32LE(crc32(contentBuffer), 4);
+  descriptor.writeUInt32LE(contentBuffer.length, 8);
+  descriptor.writeUInt32LE(0, 12);
+  const centralHeader = Buffer.alloc(46);
+  centralHeader.writeUInt32LE(0x02014b50, 0);
+  centralHeader.writeUInt16LE(20, 4);
+  centralHeader.writeUInt16LE(20, 6);
+  centralHeader.writeUInt16LE(0x0008, 8);
+  centralHeader.writeUInt32LE(crc32(contentBuffer), 16);
+  centralHeader.writeUInt32LE(contentBuffer.length, 20);
+  centralHeader.writeUInt32LE(contentBuffer.length, 24);
+  centralHeader.writeUInt16LE(nameBuffer.length, 28);
+  centralHeader.writeUInt32LE(0, 42);
+  const endOfCentral = Buffer.alloc(22);
+  endOfCentral.writeUInt32LE(0x06054b50, 0);
+  endOfCentral.writeUInt16LE(1, 8);
+  endOfCentral.writeUInt16LE(1, 10);
+  endOfCentral.writeUInt32LE(centralHeader.length + nameBuffer.length, 12);
+  endOfCentral.writeUInt32LE(localHeader.length + nameBuffer.length + contentBuffer.length + descriptor.length, 16);
+  return Buffer.concat([localHeader, nameBuffer, contentBuffer, descriptor, centralHeader, nameBuffer, endOfCentral]);
+}
+
 const legacyTweetJs = `window.YTD.tweet.part0 = [
   {
     "tweet": {
@@ -107,4 +150,11 @@ test('剥离 window.YTD 前缀并容忍缺失字段', () => {
   assert.equal(archive.tweets[0].id, '333');
   assert.equal(archive.tweets[0].lang, '');
   assert.equal(archive.tweets[0].favoriteCount, 0);
+});
+
+test('解析带数据描述符且描述符与中央目录不一致的流式打包归档', () => {
+  const buffer = buildStreamedZip('data/tweet.js', Buffer.from(legacyTweetJs, 'utf8'));
+  const archive = parseXArchive(buffer);
+  assert.equal(archive.tweets.length, 2);
+  assert.equal(archive.tweets[0].id, '111');
 });

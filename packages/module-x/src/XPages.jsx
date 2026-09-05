@@ -9,8 +9,10 @@ import { Field, FieldLabel } from '@appica/ui-react/field';
 import { LayoutGrid, FileText, Message, Database, Plus } from '@appica/icons-react';
 import { SectionCard, Empty, DescriptionList, Metric, api } from '@personal-workbench/core';
 import { ContentTable } from './ContentTable.jsx';
+import { PublicationPlanPool } from './PublicationPlanPool.jsx';
+import { ContentArchivePage } from './ContentArchivePage.jsx';
 
-function XOverviewPage({ dashboard, candidateEvent }) {
+function XOverviewPage({ dashboard, candidateEvent, candidatePlan }) {
   return (
     <>
       <div className="grid grid-cols-24 gap-4">
@@ -21,7 +23,7 @@ function XOverviewPage({ dashboard, candidateEvent }) {
       </div>
       <div className="section-row grid grid-cols-24 gap-4">
         <div className="col-span-24 xl:col-span-16">
-          <SectionCard title="近期内容"><ContentTable packs={dashboard.recentPacks} onEvent={candidateEvent} /></SectionCard>
+          <SectionCard title="近期内容"><ContentTable packs={dashboard.recentPacks} onEvent={candidateEvent} onPlan={candidatePlan} /></SectionCard>
         </div>
         <div className="col-span-24 xl:col-span-8">
           <SectionCard title="当前定位">
@@ -37,31 +39,34 @@ function XOverviewPage({ dashboard, candidateEvent }) {
   );
 }
 
-function LibraryPage({ topics, filters, setFilters, filteredPacks, candidateEvent }) {
+function LibraryPage({ topics, filters, setFilters, packs, filteredPacks, candidateArchive, candidateEvent, candidatePlan }) {
   return (
-    <SectionCard>
-      <div className="mb-4 flex flex-wrap gap-3">
-        <Select value={filters.topic || undefined} onValueChange={(topic) => setFilters({ ...filters, topic: topic || '' })}>
-          <SelectTrigger clearable className="min-w-36"><SelectValue placeholder="全部主题" /></SelectTrigger>
-          <SelectContent>{topics.map((topic) => <SelectItem key={topic} value={topic}>{topic}</SelectItem>)}</SelectContent>
-        </Select>
-        <Select items={{ zh: '中文', en: 'English' }} value={filters.language || undefined} onValueChange={(language) => setFilters({ ...filters, language: language || '' })}>
-          <SelectTrigger clearable className="min-w-36"><SelectValue placeholder="全部语言" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="zh">中文</SelectItem>
-            <SelectItem value="en">English</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select items={{ active: '有效', expired: '已过期' }} value={filters.status || undefined} onValueChange={(status) => setFilters({ ...filters, status: status || '' })}>
-          <SelectTrigger clearable className="min-w-36"><SelectValue placeholder="全部状态" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="active">有效</SelectItem>
-            <SelectItem value="expired">已过期</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <ContentTable packs={filteredPacks} onEvent={candidateEvent} />
-    </SectionCard>
+    <>
+      <PublicationPlanPool packs={packs} onCopy={candidateArchive} onPlan={candidatePlan} />
+      <SectionCard>
+        <div className="mb-4 grid grid-cols-3 gap-3">
+          <Select value={filters.topic || undefined} onValueChange={(topic) => setFilters({ ...filters, topic: topic || '' })}>
+            <SelectTrigger clearable className="w-full"><SelectValue placeholder="全部主题" /></SelectTrigger>
+            <SelectContent>{topics.map((topic) => <SelectItem key={topic} value={topic}>{topic}</SelectItem>)}</SelectContent>
+          </Select>
+          <Select items={{ zh: '中文', en: 'English' }} value={filters.language || undefined} onValueChange={(language) => setFilters({ ...filters, language: language || '' })}>
+            <SelectTrigger clearable className="w-full"><SelectValue placeholder="全部语言" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="zh">中文</SelectItem>
+              <SelectItem value="en">English</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select items={{ active: '有效', expired: '已过期' }} value={filters.status || undefined} onValueChange={(status) => setFilters({ ...filters, status: status || '' })}>
+            <SelectTrigger clearable className="w-full"><SelectValue placeholder="全部状态" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">有效</SelectItem>
+              <SelectItem value="expired">已过期</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <ContentTable packs={filteredPacks} onEvent={candidateEvent} onPlan={candidatePlan} />
+      </SectionCard>
+    </>
   );
 }
 
@@ -182,4 +187,4 @@ function StylePage({ style, withFeedback, refresh }) {
   );
 }
 
-export { XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, Preference };
+export { ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, Preference };

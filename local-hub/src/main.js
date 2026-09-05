@@ -4,6 +4,7 @@ const { generateDailyCandidates } = require('./daily-generator.js');
 const { extractSemanticProfile } = require('./semantic-profile.js');
 const { discoverModels, getSafeModelSettings, writeModelSettings } = require('./model-settings.js');
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark.js');
+const { fetchConfiguredFinnhubQuote, fetchConfiguredFinnhubValuation, getSafeFinnhubSettings, testFinnhubConnection, writeFinnhubSettings } = require('./finnhub.js');
 
 const port = Number(process.env.X_ASSISTANT_PORT || 4318);
 const hub = createContentHub({
@@ -12,7 +13,10 @@ const hub = createContentHub({
   semanticExtractor: extractSemanticProfile,
   modelSettings: { discover: discoverModels, get: getSafeModelSettings, set: writeModelSettings },
   barkSettings: { get: getSafeBarkSettings, set: writeBarkSettings },
-  barkPusher: pushBarkNotification
+  barkPusher: pushBarkNotification,
+  finnhubSettings: { get: getSafeFinnhubSettings, set: writeFinnhubSettings, test: testFinnhubConnection },
+  quoteFetcher: fetchConfiguredFinnhubQuote,
+  valuationFetcher: fetchConfiguredFinnhubValuation
 });
 
 async function runScheduledWork() {

@@ -20,7 +20,7 @@ const STATUS_ITEMS = { active: '有效', archived: '已归档', all: '全部' };
 const SORT_ITEMS = { updatedAt: '最近更新', createdAt: '创建时间', title: '标题', stars: 'GitHub Stars' };
 
 function emptyRecordInput() {
-  return { url: '', title: '', summary: '', categoryIds: [], tagsText: '', notes: '' };
+  return { url: '', title: '', summary: '', categoryIds: [], tagsText: '', notes: '', sourceSnapshot: null };
 }
 
 function formatDateTime(value) {
@@ -41,6 +41,22 @@ function parseTags(value) {
   return value.split(/[、,，\n]/).map((tag) => tag.trim()).filter(Boolean);
 }
 
+function captureUrlValidationError(value) {
+  const source = value.trim();
+  if (!source) return '请输入公开 URL。';
+  let url;
+  try {
+    url = new URL(source);
+  } catch {
+    return '请输入有效的 URL。';
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return '抓取仅支持 http 或 https 地址。';
+  if (url.username || url.password) return '抓取地址不能包含账号或密码。';
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return '抓取仅允许受限公开地址。';
+  return '';
+}
+
 function recordInputFrom(record) {
   return {
     url: record.url,
@@ -48,7 +64,8 @@ function recordInputFrom(record) {
     summary: record.summary,
     categoryIds: record.categories.map((category) => category.id),
     tagsText: record.tags.join('、'),
-    notes: record.notes
+    notes: record.notes,
+    sourceSnapshot: record.sourceSnapshot || null
   };
 }
 
@@ -56,8 +73,10 @@ function toggleCategory(categoryIds, categoryId, checked) {
   return checked ? [...new Set([...categoryIds, categoryId])] : categoryIds.filter((id) => id !== categoryId);
 }
 
-function RecordEditor({ categories, value, onChange, error }) {
+function RecordEditor({ categories, value, onChange, error, captureLoading, captureError, captureNotice, onCapture }) {
   const inactiveSelected = new Set(value.categoryIds);
+  const urlError = value.url.trim() ? captureUrlValidationError(value.url) : '';
+  const snapshot = value.sourceSnapshot;
   return (
     <div className="flex flex-col gap-4">
       {error && (
@@ -68,9 +87,31 @@ function RecordEditor({ categories, value, onChange, error }) {
       )}
       <Field>
         <FieldLabel><span className="text-error">*</span> 公开 URL</FieldLabel>
-        <Input type="url" required autoFocus autoComplete="url" value={value.url} placeholder="https://example.com/project" onChange={(event) => onChange({ ...value, url: event.target.value })} />
-        <FieldDescription>仅保存你确认的公开 HTTP/HTTPS 链接。</FieldDescription>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input type="url" required autoFocus autoComplete="url" value={value.url} placeholder="https://example.com/project" onChange={(event) => onChange({ ...value, url: event.target.value })} />
+          <LoadingButton type="button" variant="outline" loading={captureLoading} disabled={!value.url.trim() || Boolean(urlError)} onClick={onCapture}>抓取信息</LoadingButton>
+        </div>
+        <FieldDescription>仅抓取受限公开 HTTP/HTTPS 页面；抓取结果只填入当前表单，点击保存后才会写入 SQLite。</FieldDescription>
+        {urlError && <p className="m-0 text-sm text-error" role="alert">{urlError}</p>}
       </Field>
+      {captureError && <Alert variant="error"><AlertTitle>无法抓取信息</AlertTitle><AlertDescription>{captureError}</AlertDescription></Alert>}
+      {captureNotice && <Alert variant="success" role="status"><AlertTitle>已取得待确认信息</AlertTitle><AlertDescription>{captureNotice}</AlertDescription></Alert>}
+      {snapshot && (
+        <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background-subtle p-3">
+          <div>
+            <p className="m-0 text-sm font-medium text-foreground-strong">{captureNotice ? '新来源快照待确认保存' : '已确认来源快照'}</p>
+            <p className="m-0 mt-1 text-xs text-foreground-muted">只保留结构化元数据，不保存网页正文或图片。</p>
+          </div>
+          <dl className="grid gap-2 text-sm sm:grid-cols-2">
+            <div className="min-w-0"><dt className="text-xs text-foreground-muted">规范化地址</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{snapshot.canonicalUrl || value.url}</dd></div>
+            <div><dt className="text-xs text-foreground-muted">抓取时间</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{formatDateTime(snapshot.fetchedAt)}</dd></div>
+            {snapshot.author && <div><dt className="text-xs text-foreground-muted">作者</dt><dd className="m-0 mt-1 text-foreground-strong">{snapshot.author}</dd></div>}
+            {snapshot.title && <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源标题</dt><dd className="m-0 mt-1 wrap-break-word text-foreground-strong">{snapshot.title}</dd></div>}
+            {snapshot.summary && <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-foreground-muted">来源摘要</dt><dd className="m-0 mt-1 whitespace-pre-wrap wrap-break-word text-foreground-strong">{snapshot.summary}</dd></div>}
+            {snapshot.imageUrl && <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-foreground-muted">来源图片链接</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{snapshot.imageUrl}</dd></div>}
+          </dl>
+        </div>
+      )}
       <Field>
         <FieldLabel><span className="text-error">*</span> 标题</FieldLabel>
         <Input required value={value.title} onChange={(event) => onChange({ ...value, title: event.target.value })} />
@@ -191,6 +232,17 @@ function RecordDetails({ open, record, loading, error, onClose }) {
                   <h3 className="m-0 text-sm font-medium text-foreground-strong">规范化 URL</h3>
                   <p className="m-0 mt-1 text-sm text-foreground-muted wrap-break-word">{record.normalizedUrl}</p>
                 </div>
+                {record.sourceSnapshot && (
+                  <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background-subtle p-3">
+                    <h3 className="m-0 text-sm font-medium text-foreground-strong">已确认来源快照</h3>
+                    <dl className="grid gap-2 text-sm sm:grid-cols-2">
+                      <div className="min-w-0"><dt className="text-xs text-foreground-muted">规范化地址</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{record.sourceSnapshot.canonicalUrl || '未提供'}</dd></div>
+                      <div><dt className="text-xs text-foreground-muted">抓取时间</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{formatDateTime(record.sourceSnapshot.fetchedAt)}</dd></div>
+                      {record.sourceSnapshot.author && <div><dt className="text-xs text-foreground-muted">作者</dt><dd className="m-0 mt-1 text-foreground-strong">{record.sourceSnapshot.author}</dd></div>}
+                      {record.sourceSnapshot.imageUrl && <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源图片链接</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{record.sourceSnapshot.imageUrl}</dd></div>}
+                    </dl>
+                  </div>
+                )}
                 <div>
                   <h3 className="m-0 text-sm font-medium text-foreground-strong">摘要</h3>
                   <p className="m-0 mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground-muted wrap-break-word">{record.summary || '未填写'}</p>
@@ -337,6 +389,9 @@ function ProgrammingRecordsPage() {
   const [recordInput, setRecordInput] = useState(emptyRecordInput);
   const [recordError, setRecordError] = useState('');
   const [recordSaving, setRecordSaving] = useState(false);
+  const [captureLoading, setCaptureLoading] = useState(false);
+  const [captureError, setCaptureError] = useState('');
+  const [captureNotice, setCaptureNotice] = useState('');
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [detailRecordId, setDetailRecordId] = useState(null);
   const [detailRecord, setDetailRecord] = useState(null);
@@ -346,6 +401,7 @@ function ProgrammingRecordsPage() {
   const loadRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const mountedRef = useRef(false);
+  const captureRequestRef = useRef(0);
 
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
@@ -388,6 +444,7 @@ function ProgrammingRecordsPage() {
       mountedRef.current = false;
       loadRequestRef.current += 1;
       detailRequestRef.current += 1;
+      captureRequestRef.current += 1;
     };
   }, []);
 
@@ -415,7 +472,27 @@ function ProgrammingRecordsPage() {
     });
   }
 
+  function resetCaptureState() {
+    captureRequestRef.current += 1;
+    setCaptureLoading(false);
+    setCaptureError('');
+    setCaptureNotice('');
+  }
+
+  function changeRecordInput(next) {
+    const urlChanged = next.url !== recordInput.url;
+    const input = urlChanged ? { ...next, sourceSnapshot: null } : next;
+    if (urlChanged) {
+      captureRequestRef.current += 1;
+      setCaptureError('');
+      setCaptureNotice('');
+    }
+    setRecordInput(input);
+    setRecordError('');
+  }
+
   function openCreate() {
+    resetCaptureState();
     setEditingRecord(null);
     setRecordInput(emptyRecordInput());
     setRecordError('');
@@ -423,6 +500,7 @@ function ProgrammingRecordsPage() {
   }
 
   function openEdit(record) {
+    resetCaptureState();
     setEditingRecord(record);
     setRecordInput(recordInputFrom(record));
     setRecordError('');
@@ -430,6 +508,7 @@ function ProgrammingRecordsPage() {
   }
 
   function closeRecordDialog() {
+    resetCaptureState();
     setRecordDialogOpen(false);
     setEditingRecord(null);
     setRecordInput(emptyRecordInput());
@@ -462,6 +541,51 @@ function ProgrammingRecordsPage() {
     }
   }
 
+  async function captureRecord() {
+    const urlError = captureUrlValidationError(recordInput.url);
+    if (urlError) {
+      setCaptureError(urlError);
+      return;
+    }
+    const requestId = ++captureRequestRef.current;
+    const requestedUrl = recordInput.url;
+    const recordId = editingRecord?.id;
+    setCaptureLoading(true);
+    setCaptureError('');
+    setCaptureNotice('');
+    try {
+      const result = await api('/programming-records/capture', {
+        method: 'POST',
+        body: JSON.stringify({ url: requestedUrl, ...(recordId ? { recordId } : {}) })
+      });
+      if (!mountedRef.current || requestId !== captureRequestRef.current) return;
+      const capture = result.capture;
+      if (!capture) throw new Error('采集结果无效。');
+      setRecordInput((current) => {
+        if (current.url !== requestedUrl) return current;
+        if (recordId) return { ...current, sourceSnapshot: capture.sourceSnapshot };
+        return {
+          ...current,
+          url: capture.url,
+          title: current.title.trim() ? current.title : capture.title,
+          summary: current.summary.trim() ? current.summary : capture.summary,
+          sourceSnapshot: capture.sourceSnapshot
+        };
+      });
+      const missingFields = Array.isArray(capture.missingFields) ? capture.missingFields : [];
+      const missingNotice = missingFields.length ? `未找到${missingFields.join('、')}，请手动补全；` : '';
+      setCaptureNotice(recordId
+        ? `${missingNotice}已取得新的来源快照；标题、摘要、备注和分类保持不变，点击保存修改后才会更新快照。`
+        : `${missingNotice}已将可用元数据填入表单；你可以继续修改，点击保存记录后才会写入本地。`);
+    } catch (requestError) {
+      if (!mountedRef.current || requestId !== captureRequestRef.current) return;
+      const existing = requestError.payload?.existingRecord;
+      setCaptureError(existing ? `该地址已存在：${existing.title}` : requestError.message);
+    } finally {
+      if (mountedRef.current && requestId === captureRequestRef.current) setCaptureLoading(false);
+    }
+  }
+
   async function saveRecord() {
     setRecordSaving(true);
     setRecordError('');
@@ -472,7 +596,8 @@ function ProgrammingRecordsPage() {
         summary: recordInput.summary,
         categoryIds: recordInput.categoryIds,
         tags: parseTags(recordInput.tagsText),
-        notes: recordInput.notes
+        notes: recordInput.notes,
+        sourceSnapshot: recordInput.sourceSnapshot
       };
       if (editingRecord) {
         await api(`/programming-records/${editingRecord.id}`, { method: 'PATCH', body: JSON.stringify(input) });
@@ -604,10 +729,10 @@ function ProgrammingRecordsPage() {
         <DialogContent className="h-150 max-h-[calc(100dvh-2rem)] sm:w-150">
           <DialogHeader>
             <DialogTitle>{editingRecord ? '编辑编程记录' : '新增编程记录'}</DialogTitle>
-            <DialogDescription>{editingRecord ? '修改你维护的字段和分类；归档状态由列表操作控制。' : '填写后明确保存；关闭或取消不会留下本地草稿。'}</DialogDescription>
+            <DialogDescription>{editingRecord ? '修改你维护的字段和分类；抓取会生成待确认来源快照，不会静默覆盖人工内容。' : '抓取信息只填入当前表单；关闭或取消不会留下本地草稿，保存后才会写入。'}</DialogDescription>
           </DialogHeader>
           <DialogBody className="min-h-0 flex-1 overflow-y-auto">
-            <div className="px-6 pb-2"><RecordEditor categories={categories} value={recordInput} onChange={(next) => { setRecordInput(next); setRecordError(''); }} error={recordError} /></div>
+            <div className="px-6 pb-2"><RecordEditor categories={categories} value={recordInput} onChange={changeRecordInput} error={recordError} captureLoading={captureLoading} captureError={captureError} captureNotice={captureNotice} onCapture={captureRecord} /></div>
           </DialogBody>
           <DialogFooter>
             <Button variant="soft" disabled={recordSaving} onClick={closeRecordDialog}>取消</Button>

@@ -11,6 +11,7 @@ const { Solar } = require('lunar-javascript');
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark');
 const { runKindleSync } = require('./kindle-sync');
 const { buildDashboardPromptCandidates, dashboardTimeContext, dashboardDateKey } = require('./dashboard-prompts');
+const { createPublicWebCapture } = require('./public-web-capture');
 const DEFAULT_STOCK_ALERT_RULES = [
   { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
   { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
@@ -68,6 +69,35 @@ function normalizeProgrammingRecordUrl(value) {
   }
   if (parsed.pathname !== '/') parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
   return { url: sourceUrl, normalizedUrl: parsed.toString() };
+}
+
+function normalizeProgrammingRecordSnapshotUrl(value) {
+  const sourceUrl = normalizeProgrammingText(value);
+  if (!sourceUrl) return null;
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error('来源快照地址必须是有效 URL。');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('来源快照地址只支持 http 或 https。');
+  if (parsed.username || parsed.password) throw new Error('来源快照地址不能包含账号或密码。');
+  return parsed.toString();
+}
+
+function normalizeProgrammingRecordSourceSnapshot(input) {
+  if (input === null || input === undefined) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('来源快照无效。');
+  return {
+    requestedUrl: normalizeProgrammingRecordSnapshotUrl(input.requestedUrl),
+    finalUrl: normalizeProgrammingRecordSnapshotUrl(input.finalUrl),
+    canonicalUrl: normalizeProgrammingRecordSnapshotUrl(input.canonicalUrl),
+    title: normalizeProgrammingText(input.title).slice(0, 500),
+    summary: normalizeProgrammingText(input.summary).slice(0, 4_000),
+    author: normalizeProgrammingText(input.author).slice(0, 500),
+    imageUrl: normalizeProgrammingRecordSnapshotUrl(input.imageUrl),
+    fetchedAt: input.fetchedAt ? asIso(input.fetchedAt) : null
+  };
 }
 
 function seedProgrammingRecordCategories(db) {
@@ -227,6 +257,11 @@ function migrateContentCandidates(db) {
   if (!columns.includes('suggested_publish_time')) db.exec('ALTER TABLE content_candidates ADD COLUMN suggested_publish_time TEXT');
   if (!columns.includes('planned_publish_time')) db.exec('ALTER TABLE content_candidates ADD COLUMN planned_publish_time TEXT');
   db.exec('DROP INDEX IF EXISTS content_candidates_unique_planned_time');
+}
+
+function migrateProgrammingRecords(db) {
+  const columns = db.prepare('PRAGMA table_info(programming_records)').all().map((column) => column.name);
+  if (!columns.includes('source_snapshot')) db.exec('ALTER TABLE programming_records ADD COLUMN source_snapshot TEXT');
 }
 
 function migrateGenerationSchedules(db) {
@@ -510,6 +545,7 @@ function initializeSchema(db) {
       github_owner TEXT,
       github_repository TEXT,
       source_stars INTEGER,
+      source_snapshot TEXT,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
       archived_at TEXT,
       created_at TEXT NOT NULL,
@@ -552,6 +588,7 @@ function initializeSchema(db) {
   migrateGenerationSchedules(db);
   migrateStockEntryPlans(db);
   migrateContentCandidates(db);
+  migrateProgrammingRecords(db);
   seedStockSymbols(db);
   seedProgrammingRecordCategories(db);
 }
@@ -568,6 +605,11 @@ function createContentHub(options = {}) {
   const quoteFetcher = options.quoteFetcher;
   const valuationFetcher = options.valuationFetcher;
   const kindleSync = typeof options.kindleSync === 'function' ? options.kindleSync : runKindleSync;
+  const capturePublicWebPage = createPublicWebCapture({
+    hostnameResolver: options.hostnameResolver,
+    webFetcher: options.webFetcher,
+    now
+  });
   fs.mkdirSync(dataDirectory, { recursive: true });
   const databasePath = path.join(dataDirectory, 'x-assistant.sqlite');
   const db = new Database(databasePath);
@@ -737,6 +779,7 @@ function createContentHub(options = {}) {
       githubOwner: row.github_owner,
       githubRepository: row.github_repository,
       stars: row.source_stars === null ? null : Number(row.source_stars),
+      sourceSnapshot: parseJson(row.source_snapshot, null),
       status: row.status,
       archivedAt: row.archived_at,
       createdAt: row.created_at,
@@ -809,6 +852,7 @@ function createContentHub(options = {}) {
     const notes = normalizeProgrammingText(input.notes);
     const categoryIds = normalizeProgrammingRecordCategoryIds(input.categoryIds);
     const tags = normalizeProgrammingRecordTags(input.tags);
+    const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot);
     const existingRecord = findProgrammingRecordByNormalizedUrl(source.normalizedUrl);
     if (existingRecord) return { existingRecord };
     const timestamp = asIso(undefined, now());
@@ -819,6 +863,7 @@ function createContentHub(options = {}) {
       summary,
       notes,
       sourceType: 'manual',
+      sourceSnapshot,
       status: 'active',
       archivedAt: null,
       createdAt: timestamp,
@@ -827,9 +872,9 @@ function createContentHub(options = {}) {
     const save = db.transaction(() => {
       db.prepare(`INSERT INTO programming_records(
         id, url, normalized_url, title, summary, notes, source_type, github_owner, github_repository,
-        source_stars, status, archived_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`)
-        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.status, record.archivedAt, record.createdAt, record.updatedAt);
+        source_stars, source_snapshot, status, archived_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.sourceSnapshot ? JSON.stringify(record.sourceSnapshot) : null, record.status, record.archivedAt, record.createdAt, record.updatedAt);
       replaceProgrammingRecordCategories(record.id, categoryIds);
       replaceProgrammingRecordTags(record.id, tags, timestamp);
     });
@@ -862,19 +907,62 @@ function createContentHub(options = {}) {
       ? null
       : normalizeProgrammingRecordCategoryIds(input.categoryIds, currentCategoryIds);
     const tags = input.tags === undefined ? null : normalizeProgrammingRecordTags(input.tags);
+    const sourceSnapshot = input.sourceSnapshot === undefined
+      ? existing.source_snapshot
+      : normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot);
+    const serializedSourceSnapshot = typeof sourceSnapshot === 'string'
+      ? sourceSnapshot
+      : sourceSnapshot ? JSON.stringify(sourceSnapshot) : null;
     const status = input.status === undefined ? existing.status : input.status;
     if (!['active', 'archived'].includes(status)) throw new Error('记录状态无效。');
     const updatedAt = asIso(undefined, now());
     const archivedAt = status === 'archived' ? existing.archived_at || updatedAt : null;
     const save = db.transaction(() => {
       db.prepare(`UPDATE programming_records
-        SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, status = ?, archived_at = ?, updated_at = ?
-        WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, status, archivedAt, updatedAt, id);
+        SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, source_snapshot = ?, status = ?, archived_at = ?, updated_at = ?
+        WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, serializedSourceSnapshot, status, archivedAt, updatedAt, id);
       if (categoryIds !== null) replaceProgrammingRecordCategories(id, categoryIds);
       if (tags !== null) replaceProgrammingRecordTags(id, tags, updatedAt);
     });
     save();
     return { record: mapProgrammingRecord(db.prepare('SELECT * FROM programming_records WHERE id = ?').get(id)) };
+  }
+
+  async function captureProgrammingRecord(input = {}) {
+    const requested = normalizeProgrammingRecordUrl(input.url);
+    const recordId = normalizeProgrammingText(input.recordId);
+    const currentRecord = recordId ? getProgrammingRecord(recordId) : null;
+    if (recordId && !currentRecord) throw new Error('编程记录不存在。');
+    const existingRecord = findProgrammingRecordByNormalizedUrl(requested.normalizedUrl);
+    if (existingRecord && existingRecord.id !== currentRecord?.id) return { existingRecord };
+
+    const captured = await capturePublicWebPage(requested.normalizedUrl);
+    const canonical = normalizeProgrammingRecordUrl(captured.canonicalUrl || captured.finalUrl || requested.normalizedUrl);
+    const canonicalExistingRecord = findProgrammingRecordByNormalizedUrl(canonical.normalizedUrl);
+    if (canonicalExistingRecord && canonicalExistingRecord.id !== currentRecord?.id) return { existingRecord: canonicalExistingRecord };
+
+    const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot({
+      requestedUrl: requested.normalizedUrl,
+      finalUrl: captured.finalUrl,
+      canonicalUrl: canonical.normalizedUrl,
+      title: captured.title,
+      summary: captured.summary,
+      author: captured.author,
+      imageUrl: captured.imageUrl,
+      fetchedAt: captured.fetchedAt
+    });
+    return {
+      capture: {
+        url: canonical.normalizedUrl,
+        normalizedUrl: canonical.normalizedUrl,
+        title: sourceSnapshot.title,
+        summary: sourceSnapshot.summary,
+        author: sourceSnapshot.author,
+        imageUrl: sourceSnapshot.imageUrl,
+        missingFields: captured.missingFields,
+        sourceSnapshot
+      }
+    };
   }
 
   function deleteProgrammingRecord(id) {
@@ -2321,6 +2409,12 @@ async function createStockPosition(input) {
           page: url.searchParams.get('page'),
           pageSize: url.searchParams.get('pageSize')
         }));
+      }
+      if (request.method === 'POST' && pathname === '/v1/programming-records/capture') {
+        const result = await captureProgrammingRecord(await parseRequest(request));
+        return result.existingRecord
+          ? sendJson(response, 409, { error: '该地址已经存在。', existingRecord: result.existingRecord })
+          : sendJson(response, 200, result);
       }
       if (request.method === 'POST' && pathname === '/v1/programming-records') {
         const result = createProgrammingRecord(await parseRequest(request));

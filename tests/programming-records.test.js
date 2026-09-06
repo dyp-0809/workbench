@@ -5,10 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createContentHub } = require('../local-hub/src/content-hub.js');
+const { createPublicWebCapture } = require('../local-hub/src/public-web-capture.js');
 
-async function withHub(run, { now = () => new Date('2026-09-06T00:00:00.000Z') } = {}) {
+async function withHub(run, options = {}) {
+  const { now = () => new Date('2026-09-06T00:00:00.000Z'), ...hubOptions } = options;
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-programming-records-'));
-  const hub = await createContentHub({ dataDirectory: directory, now });
+  const hub = await createContentHub({ dataDirectory: directory, now, ...hubOptions });
   const address = await hub.listen(0);
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
@@ -257,4 +259,187 @@ test('加密备份恢复完整保留编程记录、分类和标签关联', async
     assert.deepEqual(records.payload.records[0].categories.map((category) => category.name), ['来源库']);
     assert.deepEqual(records.payload.records[0].tags, ['恢复测试']);
   });
+});
+
+test('确认式公开采集只在请求时读取 metadata，确认前不写入 SQLite', async () => {
+  const requestedUrls = [];
+  await withHub(async ({ baseUrl }) => {
+    const capture = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://capture.example/original' })
+    });
+    assert.equal(capture.response.status, 200);
+    assert.deepEqual(requestedUrls, ['https://capture.example/original']);
+    assert.equal(capture.payload.capture.url, 'https://capture.example/canonical');
+    assert.equal(capture.payload.capture.title, 'Open Graph 标题');
+    assert.equal(capture.payload.capture.summary, 'Open Graph 摘要');
+    assert.equal(capture.payload.capture.author, '来源作者');
+    assert.equal(capture.payload.capture.imageUrl, 'https://capture.example/cover.png');
+    assert.equal((await request(baseUrl, '/v1/programming-records')).payload.total, 0);
+
+    const saved = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: capture.payload.capture.url,
+        title: '人工确认标题',
+        summary: capture.payload.capture.summary,
+        notes: '确认后才保存。',
+        sourceSnapshot: capture.payload.capture.sourceSnapshot
+      })
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.record.title, '人工确认标题');
+    assert.equal(saved.payload.record.sourceSnapshot.canonicalUrl, 'https://capture.example/canonical');
+    assert.equal(saved.payload.record.sourceSnapshot.title, 'Open Graph 标题');
+  }, {
+    hostnameResolver: async () => [{ address: '93.184.216.34', family: 4 }],
+    webFetcher: async (url) => {
+      requestedUrls.push(url.toString());
+      return {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: `<html><head>
+          <link rel="canonical" href="https://capture.example/canonical">
+          <meta property="og:title" content="Open Graph 标题">
+          <meta property="og:description" content="Open Graph 摘要">
+          <meta property="og:image" content="/cover.png">
+          <meta name="author" content="来源作者">
+          <script type="application/ld+json">{"@type":"Article","headline":"JSON-LD 标题","description":"JSON-LD 摘要"}</script>
+          <title>HTML 标题</title>
+        </head><body>ignored</body></html>`
+      };
+    }
+  });
+});
+
+test('公开采集拒绝内部地址与不安全重定向，失败后仍允许手动保存', async () => {
+  const requestedUrls = [];
+  await withHub(async ({ baseUrl }) => {
+    for (const unsafeUrl of ['http://localhost/', 'http://127.0.0.1/', 'http://10.0.0.1/', 'http://[::1]/', 'http://[fe80::1]/', 'http://[fec0::1]/', 'http://[::ffff:10.0.0.1]/', 'file:///tmp/private']) {
+      const rejected = await request(baseUrl, '/v1/programming-records/capture', {
+        method: 'POST',
+        body: JSON.stringify({ url: unsafeUrl })
+      });
+      assert.equal(rejected.response.status, 400);
+    }
+    assert.deepEqual(requestedUrls, []);
+
+    const redirect = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://redirect.example/start' })
+    });
+    assert.equal(redirect.response.status, 400);
+    assert.deepEqual(requestedUrls, ['https://redirect.example/start']);
+
+    const privateResolution = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://private-resolution.example/' })
+    });
+    assert.equal(privateResolution.response.status, 400);
+    assert.deepEqual(requestedUrls, ['https://redirect.example/start']);
+
+    const nonHtml = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://binary.example/manual' })
+    });
+    assert.equal(nonHtml.response.status, 400);
+    assert.match(nonHtml.payload.error, /HTML/);
+
+    const missingMetadata = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://missing.example/manual' })
+    });
+    assert.equal(missingMetadata.response.status, 200);
+    assert.deepEqual(missingMetadata.payload.capture.missingFields, ['标题', '摘要', '作者', '来源图片']);
+
+    const manual = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://binary.example/manual', title: '手动补全的资料' })
+    });
+    assert.equal(manual.response.status, 201);
+  }, {
+    hostnameResolver: async (hostname) => hostname === 'private-resolution.example'
+      ? [{ address: '10.0.0.8', family: 4 }]
+      : [{ address: '93.184.216.34', family: 4 }],
+    webFetcher: async (url) => {
+      requestedUrls.push(url.toString());
+      if (url.hostname === 'redirect.example') return { status: 302, headers: { location: 'http://127.0.0.1/private' }, body: '' };
+      if (url.hostname === 'missing.example') return { status: 200, headers: { 'content-type': 'text/html' }, body: '<html><head></head><body>no metadata</body></html>' };
+      return { status: 200, headers: { 'content-type': 'application/pdf' }, body: 'not html' };
+    }
+  });
+});
+
+test('重复 URL 不重新抓取，重新抓取只在确认后更新来源快照', async () => {
+  let captureCalls = 0;
+  await withHub(async ({ baseUrl }) => {
+    const created = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: 'https://refresh.example/tool',
+        title: '人工维护标题',
+        notes: '人工备注',
+        sourceSnapshot: { canonicalUrl: 'https://refresh.example/tool', title: '旧来源标题', summary: '旧来源摘要', fetchedAt: '2026-09-06T00:00:00.000Z' }
+      })
+    });
+    assert.equal(created.response.status, 201);
+
+    const duplicate = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://REFRESH.example/tool/' })
+    });
+    assert.equal(duplicate.response.status, 409);
+    assert.equal(duplicate.payload.existingRecord.id, created.payload.record.id);
+    assert.equal(captureCalls, 0);
+
+    const recaptured = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://refresh.example/tool', recordId: created.payload.record.id })
+    });
+    assert.equal(recaptured.response.status, 200);
+    assert.equal(captureCalls, 1);
+
+    const beforeConfirmation = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`);
+    assert.equal(beforeConfirmation.payload.record.title, '人工维护标题');
+    assert.equal(beforeConfirmation.payload.record.sourceSnapshot.title, '旧来源标题');
+
+    const confirmed = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ sourceSnapshot: recaptured.payload.capture.sourceSnapshot })
+    });
+    assert.equal(confirmed.response.status, 200);
+    assert.equal(confirmed.payload.record.title, '人工维护标题');
+    assert.equal(confirmed.payload.record.notes, '人工备注');
+    assert.equal(confirmed.payload.record.sourceSnapshot.title, '新来源标题');
+  }, {
+    hostnameResolver: async () => [{ address: '93.184.216.34', family: 4 }],
+    webFetcher: async () => {
+      captureCalls += 1;
+      return {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+        body: '<html><head><title>新来源标题</title><meta name="description" content="新来源摘要"></head></html>'
+      };
+    }
+  });
+});
+
+test('公开采集以绝对期限停止，并允许公开 IPv4-mapped IPv6', async () => {
+  const timeoutCapture = createPublicWebCapture({
+    timeoutMs: 20,
+    hostnameResolver: async () => [{ address: '93.184.216.34', family: 4 }],
+    webFetcher: async () => new Promise(() => {})
+  });
+  await assert.rejects(timeoutCapture('https://timeout.example/'), /超时/);
+
+  let publicIpv6Requests = 0;
+  const publicIpv6Capture = createPublicWebCapture({
+    webFetcher: async () => {
+      publicIpv6Requests += 1;
+      return { status: 200, headers: { 'content-type': 'text/html' }, body: '<html><head><title>公开映射地址</title></head></html>' };
+    }
+  });
+  const capture = await publicIpv6Capture('http://[::ffff:93.184.216.34]/');
+  assert.equal(capture.title, '公开映射地址');
+  assert.equal(publicIpv6Requests, 1);
 });

@@ -3,7 +3,7 @@ import { createElement, memo, useEffect, useMemo, useRef, useState } from 'react
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { useToastManager, ToastProvider, Toaster } from '@appica/ui-react/toast';
-import { dashboardViewModel, localDateKey, calendarDateKey, sortUpcomingItems } from './dashboardViewModel.js';
+import { dashboardViewModel, localDateKey, calendarDateKey, sortUpcomingItems, promptIdentity, promptIndexForId } from './dashboardViewModel.js';
 
 // shadcn/ui local primitives
 import { Button } from '@appica/ui-react/button';
@@ -123,6 +123,8 @@ function AppInner() {
   }, [themeMode]);
   const toast = useToastManager();
   const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
+  const [navigationTarget, setNavigationTarget] = useState(null);
+  const previousPageRef = useRef(page);
   const [openGroups, setOpenGroups] = useState(() => new Set(Object.entries(GROUP_KEYS).filter(([, keys]) => keys.includes(page)).map(([key]) => key)));
   useEffect(() => { setOpenGroups((current) => { const next = new Set(current); for (const [key, keys] of Object.entries(GROUP_KEYS)) if (keys.includes(page)) next.add(key); return next; }); }, [page]);
   const [dashboard, setDashboard] = useState(null);
@@ -198,18 +200,28 @@ function AppInner() {
       setNotice(error.message);
     }
   };
-  function navigate(nextPage) {
-    const path = PAGE_PATHS[nextPage];
+  function navigate(nextPage, entityId) {
+    const resolvedPage = nextPage === 'calendar' ? 'dashboard-v2' : nextPage;
+    const path = PAGE_PATHS[resolvedPage];
     if (!path) return;
+    if (resolvedPage === 'library' && entityId) setFilters({ topic: '', language: '', status: '' });
     if (window.location.pathname !== path) window.history.pushState(null, '', path);
-    setPage(nextPage);
+    setPage(resolvedPage);
+    setNavigationTarget(entityId ? { page: resolvedPage, entityId: String(entityId) } : null);
   }
   useEffect(() => {
-    const onPop = () => setPage(pageFromPath(window.location.pathname));
+    const onPop = () => {
+      setPage(pageFromPath(window.location.pathname));
+      setNavigationTarget(null);
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
   useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    if (page === 'dashboard-v2' && previousPageRef.current !== page) refresh();
+    previousPageRef.current = page;
+  }, [page]);
   const topics = useMemo(() => [...new Set(packs.flatMap((pack) => pack.candidates.map((candidate) => candidate.topic)))], [packs]);
   const filteredPacks = useMemo(() => packs.filter((pack) => (!filters.status || pack.retentionStatus === filters.status) && (!filters.topic || pack.candidates.some((candidate) => candidate.topic === filters.topic)) && (!filters.language || pack.candidates.some((candidate) => candidate.language === filters.language))), [filters, packs]);
 
@@ -337,9 +349,9 @@ function AppInner() {
           <div className="dashboard-scroll min-h-0 flex-1 overflow-y-auto">
             {page === 'dashboard-v2' && dashboard && <DashboardPage dashboard={dashboard} stockPositions={stockPositions} onRefresh={refresh} onNavigate={navigate} onTaskToggle={toggleTask} />}
             {page === 'x-overview' && dashboard && <XOverviewPage dashboard={dashboard} candidateEvent={candidateEvent} candidatePlan={candidatePlan} />}
-            {page === 'expiring' && <ExpiringItemsPage />}
-            {page === 'tasks' && <TaskPage />}
-            {page === 'library' && <LibraryPage topics={topics} filters={filters} setFilters={setFilters} packs={packs} filteredPacks={filteredPacks} candidateArchive={archiveCandidateCopy} candidateEvent={candidateEvent} candidatePlan={candidatePlan} />}
+            {page === 'expiring' && <ExpiringItemsPage focusId={navigationTarget?.page === 'expiring' ? navigationTarget.entityId : null} />}
+            {page === 'tasks' && <TaskPage focusId={navigationTarget?.page === 'tasks' ? navigationTarget.entityId : null} />}
+            {page === 'library' && <LibraryPage topics={topics} filters={filters} setFilters={setFilters} packs={packs} filteredPacks={filteredPacks} candidateArchive={archiveCandidateCopy} candidateEvent={candidateEvent} candidatePlan={candidatePlan} focusId={navigationTarget?.page === 'library' ? navigationTarget.entityId : null} />}
             {page === 'archive' && <ContentArchivePage entries={contentArchive} onPerformance={setArchivePerformance} />}
             {page === 'materials' && <MaterialsPage materials={materials} materialInput={materialInput} setMaterialInput={setMaterialInput} addMaterial={addMaterial} />}
             {page === 'replies' && <RepliesPage replies={replies} />}
@@ -727,22 +739,30 @@ function DashboardCalendar({ days, selectedDate, onSelect }) {
 
 function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, onTaskToggle }) {
   const view = dashboardViewModel(dashboard);
-  const [activePromptIndex, setActivePromptIndex] = useState(() => {
-    const prompts = view.promptList;
-    if (prompts.length < 2) return 0;
-    const previous = Number.parseInt(window.localStorage.getItem('dashboard-prompt-index') || '', 10);
-    return Number.isInteger(previous) ? (previous + 1) % prompts.length : 0;
+  const promptIds = useMemo(() => view.promptList.map((prompt, index) => promptIdentity(prompt, index)), [view.promptList]);
+  const promptKey = promptIds.join('|');
+  const [activePromptId, setActivePromptId] = useState(() => {
+    const previous = window.localStorage.getItem('dashboard-prompt-id');
+    return previous && promptIds.includes(previous) ? previous : promptIds[0] || null;
   });
   useEffect(() => {
-    if (view.promptList.length > 1) window.localStorage.setItem('dashboard-prompt-index', String(activePromptIndex));
-  }, [activePromptIndex, view.promptList.length]);
-  const activePrompt = view.promptList[activePromptIndex] || view.promptList[0] || null;
+    setActivePromptId((current) => current && promptIds.includes(current) ? current : promptIds[0] || null);
+  }, [promptKey]);
+  useEffect(() => {
+    if (activePromptId) window.localStorage.setItem('dashboard-prompt-id', activePromptId);
+    else window.localStorage.removeItem('dashboard-prompt-id');
+  }, [activePromptId]);
+  const activePromptIndex = promptIndexForId(view.promptList, activePromptId);
+  const activePrompt = view.promptList[activePromptIndex] || null;
+  const setPromptAt = (index) => setActivePromptId(promptIds[index] || null);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const selectedDateKey = calendarDateKey(selectedDate);
   const selectedCalendarEvents = view.calendarEvents.filter((event) => event.date === selectedDateKey);
   const selectedDay = view.calendarDays.find((day) => day.date === selectedDateKey);
   const selectedTasks = view.openTasks.filter((task) => task.dueDate && localDateKey(task.dueDate) === selectedDateKey);
   const selectedExpiring = dashboard.expiringItems.filter((item) => item.dueDate && localDateKey(item.dueDate) === selectedDateKey);
+  const menstrualCycles = dashboard.menstrualCycles || [];
+  const menstrualMoodLogs = dashboard.menstrualMoodLogs || [];
   const menstrualPrediction = dashboard.menstrualPrediction;
   const menstrualPrivacyEnabled = dashboard.privacy?.menstrualEnabled === true;
   const upcomingItems = sortUpcomingItems(dashboard.expiringItems.filter((item) => item.reminderStatus !== 'overdue'));
@@ -753,8 +773,6 @@ function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, 
     return { value: summary.value + value, cost: summary.cost + cost, pnl: summary.pnl + value - cost };
   }, { value: 0, cost: 0, pnl: 0 });
   const stockPnlRatio = stockSummary.cost ? (stockSummary.pnl / stockSummary.cost) * 100 : null;
-  const [menstrualCycles, setMenstrualCycles] = useState([]);
-  useEffect(() => { api('/menstrual-cycles').then((result) => setMenstrualCycles(result.cycles || [])).catch((error) => reportApiError(error)); }, []);
   const stockPnl = stockSummary.pnl;
   const stockChartOption = useMemo(() => ({
     animation: false,
@@ -770,19 +788,6 @@ function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, 
       data: [{ value: Math.max(-100, Math.min(100, stockPnlRatio || 0)) }]
     }]
   }), [stockPnl, stockPnlRatio]);
-  const menstrualPredictionSummary = useMemo(() => {
-    const starts = menstrualCycles.map((cycle) => cycle.startDate).filter(Boolean).sort();
-    if (starts.length < 2) return null;
-    const intervals = starts.slice(1).map((start, index) => Math.round((Date.parse(`${start}T00:00:00Z`) - Date.parse(`${starts[index]}T00:00:00Z`)) / 86400000));
-    const average = Math.round(intervals.slice(-6).reduce((sum, value) => sum + value, 0) / Math.min(6, intervals.length));
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    let predictedDate = new Date(`${starts.at(-1)}T00:00:00Z`);
-    predictedDate.setUTCDate(predictedDate.getUTCDate() + average);
-    while (predictedDate.toISOString().slice(0, 10) < today) predictedDate.setUTCDate(predictedDate.getUTCDate() + average);
-    const date = predictedDate.toISOString().slice(0, 10);
-    return { date, remainingDays: Math.max(0, Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000)), average };
-  }, [menstrualCycles]);
   const menstrualChartOption = useMemo(() => {
     const cycles = menstrualCycles.slice().filter((cycle) => cycle.endDate).sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(-8);
     return { animation: false, grid: { top: 12, right: 18, bottom: 28, left: 44 }, tooltip: { trigger: 'axis', formatter: (items) => { const item = items[0]; return `${item?.axisValue || ''}<br/>经期开始：当月第 ${item?.value || 0} 天`; } }, xAxis: { type: 'category', data: cycles.map((cycle) => cycle.startDate.slice(0, 7)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#cbd5e1' } } }, yAxis: { type: 'value', min: 1, max: 31, interval: 5, axisLabel: { color: '#64748b', formatter: (value) => `${value}日` }, splitLine: { lineStyle: { color: '#e2e8f0' } } }, series: [{ name: '经期开始日', type: 'line', smooth: false, symbol: 'circle', symbolSize: 9, data: cycles.map((cycle) => Number(cycle.startDate.slice(-2))), lineStyle: { width: 3, color: '#6366f1' }, itemStyle: { color: '#6366f1' }, areaStyle: { color: 'rgba(99, 102, 241, .12)' } }] };
@@ -791,7 +796,7 @@ function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, 
   return <div className="dashboard-home">
     <div className="dashboard-layout">
       <div className="dashboard-layout-row dashboard-layout-row-prompt">
-        <SectionCard title="智能提示" className="dashboard-prompt-panel"><div className="dashboard-smart-prompt"><span className="dashboard-prompt-icon">✦</span>{view.promptFailed ? <div><strong>个性化提示暂时不可用</strong><p>请稍后重试，或检查数据服务连接。</p><Button size="sm" variant="outline" onClick={onRefresh}>重试</Button></div> : activePrompt ? <div className="dashboard-prompt-content" key={activePromptIndex}><AnimatedPromptTitle title={activePrompt.title} /><p>{activePrompt.reason}</p><div className="flex flex-wrap items-center gap-2"><Badge size="sm" variant="info">{({ tasks: '待办', expiring: '到期提醒', menstrual: '经期', stocks: '股票', specialDays: '特殊日子' }[activePrompt.kind] || activePrompt.kind)}</Badge><Button size="sm" variant="outline" onClick={() => onNavigate(activePrompt.action?.page)}>{activePrompt.action?.label || '去处理'}</Button></div></div> : view.hasAvailableSource ? <p>今天没有需要优先处理的事项。</p> : <p>个性化提示尚未设置，请先配置数据来源。</p>}</div>{view.promptList.length > 1 && <div className="dashboard-prompt-controls"><Button size="sm" variant="ghost" disabled={activePromptIndex === 0} aria-label="上一条提示" onClick={() => setActivePromptIndex((index) => Math.max(0, index - 1))}>上一条</Button><span aria-live="polite">{activePromptIndex + 1} / {view.promptList.length}</span><Button size="sm" variant="ghost" disabled={activePromptIndex === view.promptList.length - 1} aria-label="下一条提示" onClick={() => setActivePromptIndex((index) => Math.min(view.promptList.length - 1, index + 1))}>下一条</Button></div>}<details className="dashboard-data-status"><summary>数据状态</summary><div className="dashboard-data-status-list">{view.sourceEntries.map((source) => <div key={source.key}><span>{source.label}</span><span className="text-foreground-muted">{source.key === 'menstrual' && !source.configured ? '经期提醒未启用' : !source.configured ? '尚未设置' : source.available ? '可用' : '暂无数据'}</span></div>)}</div></details><div className="dashboard-status-row">{[['逾期', view.overdueItems.length, 'error'], ['今日到期', view.todayItems.length, 'warning'], ['待办', view.openTasks.length, 'info'], ['待处理候选', view.pendingCandidates, 'primary']].map(([label, value, variant]) => <span key={label} className={`dashboard-status-item is-${variant}`}><b><NumberRoller value={value} /></b><span>{label}</span></span>)}</div></SectionCard>
+        <SectionCard title="智能提示" className="dashboard-prompt-panel"><div className="dashboard-smart-prompt"><span className="dashboard-prompt-icon">✦</span>{view.promptFailed ? <div><strong>个性化提示暂时不可用</strong><p>请稍后重试，或检查数据服务连接。</p><Button size="sm" variant="outline" onClick={onRefresh}>重试</Button></div> : activePrompt ? <div className="dashboard-prompt-content" key={activePromptId}><AnimatedPromptTitle title={activePrompt.title} /><p>{activePrompt.reason}</p><div className="flex flex-wrap items-center gap-2"><Badge size="sm" variant="info">{activePrompt.source?.label || ({ tasks: '待办', expiring: '到期提醒', calendar: '日历', menstrual: '经期', stocks: '股票', content: '内容', specialDays: '特殊日子' }[activePrompt.kind] || activePrompt.kind)}</Badge><Button size="sm" variant="outline" onClick={() => onNavigate(activePrompt.action?.page, activePrompt.action?.entityId)}>{activePrompt.action?.label || '去处理'}</Button></div></div> : view.hasAvailableSource ? <p>今天没有需要优先处理的事项。</p> : <p>个性化提示尚未设置，请先配置数据来源。</p>}</div>{view.promptList.length > 1 && <div className="dashboard-prompt-controls"><Button size="sm" variant="ghost" disabled={activePromptIndex === 0} aria-label="上一条提示" onClick={() => setPromptAt(activePromptIndex - 1)}>上一条</Button><span aria-live="polite">{activePromptIndex + 1} / {view.promptList.length}</span><Button size="sm" variant="ghost" disabled={activePromptIndex === view.promptList.length - 1} aria-label="下一条提示" onClick={() => setPromptAt(activePromptIndex + 1)}>下一条</Button></div>}<details className="dashboard-data-status"><summary>数据状态</summary><div className="dashboard-data-status-list">{view.sourceEntries.map((source) => <div key={source.key}><span>{source.label}</span><span className="text-foreground-muted">{source.key === 'menstrual' && !source.configured ? '经期提醒未启用' : source.status === 'error' || source.status === 'unavailable' ? '暂不可用' : !source.configured ? '尚未设置' : source.available ? '可用' : '暂无数据'}</span></div>)}</div></details><div className="dashboard-status-row">{[['逾期', view.overdueItems.length, 'error'], ['今日到期', view.todayItems.length, 'warning'], ['待办', view.openTasks.length, 'info'], ['待处理候选', view.pendingCandidates, 'primary']].map(([label, value, variant]) => <span key={label} className={`dashboard-status-item is-${variant}`}><b><NumberRoller value={value} /></b><span>{label}</span></span>)}</div></SectionCard>
         <SectionCard title="日历" className="dashboard-calendar-panel"><DashboardCalendar days={view.calendarDays} selectedDate={selectedDate} onSelect={setSelectedDate} /></SectionCard>
       </div>
       <div className="dashboard-layout-row dashboard-layout-row-actions">
@@ -800,7 +805,39 @@ function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, 
       </div>
       <div className="dashboard-layout-row dashboard-layout-row-secondary">
         <SectionCard title="股票盈亏"><div className="stock-summary-line"><div><span className="text-sm text-foreground-muted">当前市值 </span><strong>{stockSummary.value ? <><span className="dashboard-currency-symbol">$</span><NumberRoller value={stockSummary.value} format={(number) => number.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} /></> : '暂无报价'}</strong></div><div><span className="text-sm text-foreground-muted">持仓盈亏 </span><strong className={stockSummary.pnl >= 0 ? 'text-success-emphasis' : 'text-error-emphasis'}>{stockPositions.length && stockSummary.value ? <>{stockSummary.pnl >= 0 ? '+' : '-'}<span className="dashboard-currency-symbol">$</span><NumberRoller value={Math.abs(stockSummary.pnl)} format={(number) => number.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} /></> : '暂无报价'}</strong></div></div>{stockPositions.length && stockSummary.value ? <Chart option={stockChartOption} height={170} /> : <Empty description="暂无可绘制的持仓行情" />}<Button className="mt-3" size="sm" variant="outline" onClick={() => onNavigate('stock-positions')}>查看仓位</Button></SectionCard>
-        <SectionCard title="经期预测"><div className="dashboard-menstrual-summary">{menstrualPrivacyEnabled && menstrualCycles.length ? <><div className="dashboard-menstrual-next">{menstrualPredictionSummary ? <><div><span>下一次经期预计</span><strong>{menstrualPredictionSummary.date}</strong></div><div><span>距今剩余</span><strong>{menstrualPredictionSummary.remainingDays} 天</strong></div></> : <p className="m-0 text-sm text-foreground-muted">至少记录两次经期开始日期后，才能计算下一次经期时间。</p>}</div><div className="dashboard-menstrual-history"><span className="text-sm text-foreground-muted">历史经期开始日</span>{menstrualCycles.filter((cycle) => cycle.endDate).length ? <Chart option={menstrualChartOption} height={260} /> : <p className="m-0 mt-2 text-sm text-foreground-muted">完成一次经期记录后，这里会显示历史折线图。</p>}</div></> : menstrualPrivacyEnabled && menstrualPrediction ? <><strong>{menstrualPrediction.phase || '下一阶段'}</strong><p>{menstrualPrediction.predictedDate || menstrualPrediction.dateRange || '日期待确认'}</p><span className="text-xs text-foreground-muted">{menstrualPrediction.basis || '基于已授权的真实周期数据'}</span></> : <><p className="m-0 text-sm text-foreground-muted">{dashboard.privacy?.menstrualEnabled === false ? '经期提醒未启用' : '健康-经期暂无可用数据'}</p><Button className="mt-3" size="sm" variant="outline" onClick={() => onNavigate('menstrual-cycle')}>去健康-经期记录</Button></>}</div></SectionCard>
+        <SectionCard title="经期预测">
+          <div className="dashboard-menstrual-summary">
+            {menstrualPrivacyEnabled && (menstrualCycles.length || menstrualMoodLogs.length || menstrualPrediction) ? (
+              <>
+                <div className="dashboard-menstrual-next">
+                  {menstrualPrediction ? (
+                    <>
+                      <div><span>下一次经期预计</span><strong>{menstrualPrediction.date || menstrualPrediction.predictedDate || '日期待确认'}</strong></div>
+                      {Number.isFinite(Number(menstrualPrediction.remainingDays)) && <div><span>距今剩余</span><strong>{menstrualPrediction.remainingDays} 天</strong></div>}
+                      {Number.isFinite(Number(menstrualPrediction.average)) && <div><span>平均周期</span><strong>{menstrualPrediction.average} 天</strong></div>}
+                      {Number.isFinite(Number(menstrualPrediction.intervalCount)) && <div><span>计算样本</span><strong>{menstrualPrediction.intervalCount} 个间隔</strong></div>}
+                      {menstrualPrediction.stage && <div><span>当前阶段</span><strong>{menstrualPrediction.stage}</strong></div>}
+                    </>
+                  ) : <p className="m-0 text-sm text-foreground-muted">暂无后端预测数据；已记录的周期与情绪仍可在下方查看。</p>}
+                </div>
+                <div className="dashboard-menstrual-history">
+                  <span className="text-sm text-foreground-muted">历史经期开始日</span>
+                  {menstrualCycles.filter((cycle) => cycle.endDate).length ? <Chart option={menstrualChartOption} height={260} /> : <p className="m-0 mt-2 text-sm text-foreground-muted">完成一次经期记录后，这里会显示历史折线图。</p>}
+                </div>
+                <div className="dashboard-menstrual-records">
+                  <span className="text-sm text-foreground-muted">经期记录</span>
+                  {menstrualCycles.length ? menstrualCycles.slice(0, 8).map((cycle) => <div key={cycle.id} className="dashboard-menstrual-record"><strong>{cycle.startDate}{cycle.endDate ? ` 至 ${cycle.endDate}` : ' 起'}</strong><span>经量：{{ light: '少量', medium: '适中', heavy: '较多' }[cycle.flow] || cycle.flow || '未记录'}</span>{cycle.symptoms && <span>症状：{cycle.symptoms}</span>}{cycle.notes && <span>备注：{cycle.notes}</span>}</div>) : <p className="m-0 mt-2 text-sm text-foreground-muted">暂无周期记录。</p>}
+                </div>
+                {menstrualMoodLogs.length > 0 && <div className="dashboard-menstrual-records"><span className="text-sm text-foreground-muted">情绪记录</span>{menstrualMoodLogs.slice(0, 8).map((log) => <div key={log.id} className="dashboard-menstrual-record"><strong>{log.loggedOn}</strong><span>情绪：{{ 1: '低落', 2: '偏低', 3: '平稳', 4: '愉悦', 5: '很好' }[log.mood] || log.mood || '未记录'}</span>{log.notes && <span>备注：{log.notes}</span>}</div>)}</div>}
+              </>
+            ) : (
+              <>
+                <p className="m-0 text-sm text-foreground-muted">{dashboard.privacy?.menstrualEnabled === false ? '经期提醒未启用' : '健康-经期暂无可用数据'}</p>
+                <Button className="mt-3" size="sm" variant="outline" onClick={() => onNavigate(dashboard.privacy?.menstrualEnabled === false ? 'settings' : 'menstrual-cycle')}>{dashboard.privacy?.menstrualEnabled === false ? '去设置' : '去健康-经期记录'}</Button>
+              </>
+            )}
+          </div>
+        </SectionCard>
       </div>
     </div>
   </div>;

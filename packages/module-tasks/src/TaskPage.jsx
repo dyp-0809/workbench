@@ -26,7 +26,7 @@ function dueStatus(task) {
   const label = daysLeft > 0 ? `剩 ${daysLeft} 天` : daysLeft === 0 ? '今天到期' : `已逾期 ${-daysLeft} 天`;
   return { progress, label };
 }
-function TaskPage() {
+function TaskPage({ focusId = null }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -35,6 +35,11 @@ function TaskPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const load = async () => { setLoading(true); try { setTasks((await api(`/tasks?status=${status}`)).tasks); } finally { setLoading(false); } };
   useEffect(() => { load().catch(() => setTasks([])); }, [status]);
+
+  useEffect(() => {
+    if (!focusId || loading) return;
+    document.querySelector('[data-focus-target="task"]')?.scrollIntoView({ block: 'center' });
+  }, [focusId, loading, tasks]);
   const save = async () => { setSaving(true); try { await api('/tasks', { method: 'POST', body: JSON.stringify(input) }); setInput({ title: '', notes: '', category: '', dueDate: '' }); setCreateOpen(false); await load(); } finally { setSaving(false); } };
   const update = async (id, nextStatus) => { await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) }); await load(); };
   const remove = async (id) => { await api(`/tasks/${id}`, { method: 'DELETE' }); await load(); };
@@ -59,7 +64,7 @@ function TaskPage() {
           </TableHeader>
           <TableBody>
             {tasks.map((task) => (
-              <TableRow key={task.id}>
+              <TableRow key={task.id} data-focus-target={focusId === task.id ? 'task' : undefined}>
                 <TableCell className="font-medium">{task.title}</TableCell>
                 <TableCell>{task.category ? <Badge variant="outline">{task.category}</Badge> : null}</TableCell>
                 <TableCell>

@@ -8,7 +8,7 @@ import { TimeField } from '@appica/ui-react/time-field';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@appica/ui-react/tooltip';
 import { Empty } from '@personal-workbench/core';
 
-function ContentTable({ packs, onEvent, onPlan }) {
+function ContentTable({ packs, onEvent, onPlan, focusId = null }) {
   const [page, setPage] = useState(1);
   const rows = useMemo(() => packs.flatMap((pack) => pack.candidates.map((candidate) => ({ ...candidate, packId: pack.id, operatingDate: pack.operatingDate, expiresAt: pack.expiresAt, status: pack.retentionStatus }))), [packs]);
   const pageSize = 10;
@@ -16,6 +16,16 @@ function ContentTable({ packs, onEvent, onPlan }) {
   const safePage = Math.min(page, totalPages);
   const pageRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
   useEffect(() => { setPage((current) => Math.min(current, totalPages)); }, [totalPages]);
+
+  useEffect(() => {
+    if (!focusId) return;
+    const index = rows.findIndex((row) => row.id === focusId);
+    if (index >= 0) setPage(Math.floor(index / pageSize) + 1);
+  }, [focusId, rows]);
+  useEffect(() => {
+    if (!focusId) return;
+    document.querySelector('[data-focus-target="content"]')?.scrollIntoView({ block: 'center' });
+  }, [focusId, safePage, rows]);
 
   return (
     <div>
@@ -37,7 +47,7 @@ function ContentTable({ packs, onEvent, onPlan }) {
           </TableHeader>
           <TableBody>
             {pageRows.map((row) => (
-              <TableRow key={row.id}>
+              <TableRow key={row.id} data-focus-target={focusId === row.id ? 'content' : undefined}>
                 <TableCell className="w-2/5">
                   <Tooltip>
                     <TooltipTrigger render={<button type="button" className="block w-full cursor-help border-0 bg-transparent p-0 text-start font-inherit text-inherit truncate focus-visible:ring-2 focus-visible:ring-ring" />}>

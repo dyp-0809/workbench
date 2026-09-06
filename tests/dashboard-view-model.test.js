@@ -54,6 +54,16 @@ test('个性化提示数组保持后端候选顺序，不在视图模型中生�
   assert.equal(view.prompt, null);
 });
 
+test('提示游标按稳定候选 ID恢复，失效时回到首条', () => {
+  const prompts = [
+    { id: 'expiring:item-1', kind: 'expiring', title: '到期项', action: { page: 'expiring' } },
+    { id: 'tasks:task-1', kind: 'tasks', title: '待办', action: { page: 'tasks' } },
+  ];
+  assert.equal(viewModel.promptIdentity(prompts[1], 1), 'tasks:task-1');
+  assert.equal(viewModel.promptIndexForId(prompts, 'tasks:task-1'), 1);
+  assert.equal(viewModel.promptIndexForId(prompts, 'tasks:removed'), 0);
+});
+
 test('来源全部不可用时不把 null 提示误报成无优先事项', () => {
   const view = viewModel.dashboardViewModel({ tasks: [], expiringItems: [], candidateStats: { active: 0 } });
   assert.equal(view.prompt, null);

@@ -54,6 +54,123 @@ test('工作台通过服务创建定位和素材，并在概览中读取同一�
   });
 });
 
+test('无合法候选时首页提示返回诚实空态', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const dashboard = await request(baseUrl, '/v1/dashboard');
+    assert.deepEqual(dashboard.payload.personalizedPrompts, []);
+    assert.equal(dashboard.payload.personalizedPrompt, null);
+  });
+});
+
+test('首页提示候选包含来源原因动作并保持兼容首条提示', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const expiring = await request(baseUrl, '/v1/expiring-items', {
+      method: 'POST',
+      body: JSON.stringify({ name: '续费域名', dueAt: '2026-08-12T00:00:00.000Z' })
+    });
+    assert.equal(expiring.response.status, 201);
+
+    const task = await request(baseUrl, '/v1/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ title: '整理发布清单' })
+    });
+    assert.equal(task.response.status, 201);
+
+    const dashboard = await request(baseUrl, '/v1/dashboard');
+    const prompt = dashboard.payload.personalizedPrompts[0];
+    assert.equal(prompt.kind, 'expiring');
+    assert.deepEqual(prompt.source, { key: 'expiring', label: '到期提醒' });
+    assert.equal(dashboard.payload.personalizedSources.calendar.available, true);
+    assert.equal(prompt.reason, '有一项到期提醒已经逾期');
+    assert.deepEqual(prompt.action, { label: '去查看', page: 'expiring', entityId: expiring.payload.item.id });
+    assert.deepEqual(dashboard.payload.personalizedPrompt, prompt);
+  });
+});
+
+test('首页返回默认开启的真实经期详情且不推断预测', async () => {
+  await withHub(async ({ baseUrl }) => {
+    await request(baseUrl, '/v1/menstrual-cycles', {
+      method: 'POST',
+      body: JSON.stringify({ startDate: '2026-07-01', endDate: '2026-07-05', flow: 'heavy', symptoms: '腹痛', notes: '记录睡眠' })
+    });
+    await request(baseUrl, '/v1/menstrual-cycles', {
+      method: 'POST',
+      body: JSON.stringify({ startDate: '2026-07-31', endDate: '2026-08-04', flow: 'light', symptoms: '', notes: '恢复正常' })
+    });
+    const dashboard = await request(baseUrl, '/v1/dashboard');
+    assert.equal(dashboard.payload.privacy.menstrualEnabled, true);
+    assert.equal(dashboard.payload.menstrualCycles.length, 2);
+    const recorded = dashboard.payload.menstrualCycles.find((cycle) => cycle.startDate === '2026-07-01');
+    assert.equal(recorded.endDate, '2026-07-05');
+    assert.equal(recorded.flow, 'heavy');
+    assert.equal(recorded.symptoms, '腹痛');
+    assert.equal(recorded.notes, '记录睡眠');
+    assert.ok(recorded.id);
+    assert.ok(recorded.createdAt);
+    assert.ok(recorded.updatedAt);
+    assert.equal(dashboard.payload.menstrualPrediction, null);
+    assert.equal(dashboard.payload.personalizedPrompts.some((prompt) => prompt.kind === 'menstrual'), false);
+    assert.equal(dashboard.payload.personalizedPromptGeneratedAt, '2026-08-13T00:00:00.000Z');
+    assert.equal(dashboard.payload.personalizedPromptTimeContext, 'early');
+  });
+});
+
+test('显式关闭经期来源时首页不返回周期详情或预测', async () => {
+  await withHub(async ({ baseUrl }) => {
+    await request(baseUrl, '/v1/menstrual-cycles', {
+      method: 'POST',
+      body: JSON.stringify({ startDate: '2026-07-01', endDate: '2026-07-05' })
+    });
+    const setting = await request(baseUrl, '/v1/menstrual-settings', {
+      method: 'PUT',
+      body: JSON.stringify({ menstrualEnabled: false })
+    });
+    assert.equal(setting.payload.settings.menstrualEnabled, false);
+    const dashboard = await request(baseUrl, '/v1/dashboard');
+    assert.deepEqual(dashboard.payload.menstrualCycles, []);
+    assert.equal(dashboard.payload.menstrualPrediction, null);
+    assert.equal(dashboard.payload.personalizedSources.menstrual.configured, false);
+  });
+});
+
+test('经期只有一条真实记录时保留记录但不推断预测', async () => {
+  await withHub(async ({ baseUrl }) => {
+    await request(baseUrl, '/v1/menstrual-cycles', {
+      method: 'POST',
+      body: JSON.stringify({ startDate: '2026-08-01', endDate: '2026-08-05', flow: 'medium', symptoms: '疲劳', notes: '' })
+    });
+    const dashboard = await request(baseUrl, '/v1/dashboard');
+    assert.equal(dashboard.payload.menstrualCycles.length, 1);
+    assert.equal(dashboard.payload.menstrualPrediction, null);
+    assert.equal(dashboard.payload.personalizedPrompts.some((prompt) => prompt.kind === 'menstrual'), false);
+  });
+});
+
+test('内容发布计划进入提示而单纯内容数量不进入，特殊日无源保持不可用', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const created = await request(baseUrl, '/v1/content-packs', {
+      method: 'POST',
+      body: JSON.stringify({
+        trigger: 'manual',
+        operatingDate: '2026-08-13',
+        candidates: [{ content: '整理本周发布内容', topic: '工作流', format: 'post', language: 'zh', tone: 'direct', recommendation: 'recommended' }]
+      })
+    });
+    const candidateId = created.payload.pack.candidates[0].id;
+    const before = await request(baseUrl, '/v1/dashboard');
+    assert.equal(before.payload.personalizedPrompts.some((prompt) => prompt.kind === 'content'), false);
+    await request(baseUrl, `/v1/content-candidates/${candidateId}/publication-plan`, {
+      method: 'PUT',
+      body: JSON.stringify({ plannedPublishTime: '10:00' })
+    });
+    const after = await request(baseUrl, '/v1/dashboard');
+    const prompt = after.payload.personalizedPrompts.find((item) => item.kind === 'content');
+    assert.equal(prompt.source.key, 'content');
+    assert.deepEqual(prompt.action, { label: '去内容库', page: 'library', entityId: candidateId });
+    assert.equal(after.payload.personalizedSources.specialDays.configured, false);
+  });
+});
+
 test('回复会话记录明确输入与草稿采用行为，且不污染原创主题偏好', async () => {
   await withHub(async ({ baseUrl }) => {
     const session = await request(baseUrl, '/v1/reply-sessions', {

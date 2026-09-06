@@ -39,7 +39,7 @@ function XOverviewPage({ dashboard, candidateEvent, candidatePlan }) {
   );
 }
 
-function LibraryPage({ topics, filters, setFilters, packs, filteredPacks, candidateArchive, candidateEvent, candidatePlan }) {
+function LibraryPage({ topics, filters, setFilters, packs, filteredPacks, candidateArchive, candidateEvent, candidatePlan, focusId = null }) {
   return (
     <>
       <PublicationPlanPool packs={packs} onCopy={candidateArchive} onPlan={candidatePlan} />
@@ -64,7 +64,7 @@ function LibraryPage({ topics, filters, setFilters, packs, filteredPacks, candid
             </SelectContent>
           </Select>
         </div>
-        <ContentTable packs={filteredPacks} onEvent={candidateEvent} onPlan={candidatePlan} />
+        <ContentTable packs={filteredPacks} onEvent={candidateEvent} onPlan={candidatePlan} focusId={focusId} />
       </SectionCard>
     </>
   );

@@ -9,10 +9,26 @@ export function localDateKey(date) {
 const SOURCE_LABELS = {
   tasks: '待办',
   expiring: '到期提醒',
+  calendar: '日历',
   menstrual: '经期',
   stocks: '股票',
+  content: '内容',
   specialDays: '特殊日子',
 };
+
+export function promptIdentity(prompt, fallbackIndex = 0) {
+  if (prompt?.id) return String(prompt.id);
+  const kind = String(prompt?.kind || 'prompt');
+  const page = String(prompt?.action?.page || 'dashboard-v2');
+  const title = String(prompt?.title || fallbackIndex);
+  return `${kind}:${page}:${title}`;
+}
+
+export function promptIndexForId(prompts, id) {
+  if (!Array.isArray(prompts) || !prompts.length) return 0;
+  const index = prompts.findIndex((prompt, promptIndex) => promptIdentity(prompt, promptIndex) === id);
+  return index >= 0 ? index : 0;
+}
 
 const CALENDAR_TIMEZONE = 'Asia/Shanghai';
 
@@ -63,11 +79,14 @@ export function dashboardViewModel(dashboard) {
   const sources = dashboard.personalizedSources || {};
   const sourceEntries = Object.keys(SOURCE_LABELS).map((key) => ({ key, label: SOURCE_LABELS[key], ...(sources[key] || { configured: false, available: false }) }));
   const prompt = dashboard.personalizedPrompt || null;
+  const promptList = (dashboard.personalizedPrompts || (prompt ? [prompt] : [])).slice(0, 3);
   const calendar = dashboard.calendar || { days: [], events: [] };
   return {
     openTasks, overdueItems, todayItems, actionItems, upcomingItems,
     pendingCandidates: dashboard.candidateStats?.active ?? dashboard.pendingCandidateCount ?? 0,
-    prompt, promptList: dashboard.personalizedPrompts || (prompt ? [prompt] : []), promptFailed: dashboard.personalizedPromptStatus === 'error' || Boolean(dashboard.personalizedPromptError),
+    prompt, promptList, promptFailed: dashboard.personalizedPromptStatus === 'error' || Boolean(dashboard.personalizedPromptError),
+    promptGeneratedAt: dashboard.personalizedPromptGeneratedAt || null,
+    promptTimeContext: dashboard.personalizedPromptTimeContext || null,
     sourceEntries, hasAvailableSource: sourceEntries.some((source) => source.available),
     promptSourceLabel: prompt ? SOURCE_LABELS[prompt.kind] || prompt.kind : '',
     calendarDays: calendar.days || [], calendarEvents: sortCalendarEvents(calendar.events || []),

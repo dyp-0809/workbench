@@ -10,6 +10,7 @@ const { advanceFrom, nextOccurrence } = require('./recurrence');
 const { Solar } = require('lunar-javascript');
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark');
 const { runKindleSync } = require('./kindle-sync');
+const { buildDashboardPromptCandidates, dashboardTimeContext, dashboardDateKey } = require('./dashboard-prompts');
 const DEFAULT_STOCK_ALERT_RULES = [
   { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
   { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
@@ -621,6 +622,7 @@ function listMenstrualCycles() {
   return db.prepare('SELECT * FROM menstrual_cycles ORDER BY start_date DESC, created_at DESC').all().map(mapMenstrualCycle);
 }
 
+
 function getMenstrualSettings() {
   const row = db.prepare("SELECT mode FROM preference_overrides WHERE preference_key = 'privacy:menstrual'").get();
   return { menstrualEnabled: row ? row.mode === 'fixed' : true };
@@ -1018,7 +1020,7 @@ async function createStockPosition(input) {
     return rules;
   }
 
-  async function evaluateStockMarketAlerts(quotes) {
+  async function evaluateStockMarketAlerts(quotes, { deliver = true } = {}) {
     const validQuotes = new Map((quotes || []).filter((quote) => Number.isFinite(Number(quote.changePercent))).map((quote) => [quote.symbol, quote]));
     const uvxy = validQuotes.get('UVXY');
     if (!uvxy) return { triggered: [], deliveryErrors: [] };
@@ -1042,6 +1044,7 @@ async function createStockPosition(input) {
       triggered.push(alert);
       const delivered = db.prepare('SELECT 1 FROM stock_alert_deliveries WHERE rule_id = ? AND trading_date = ?').get(rule.id, tradingDate);
       if (delivered) { alert.pushed = true; continue; }
+      if (!deliver) continue;
       try {
         const configured = typeof barkSettings?.get === 'function' && (await barkSettings.get()).configured;
         if (!configured || typeof barkPusher !== 'function') { deliveryErrors.push({ ruleId: rule.id, error: 'Bark 未配置。' }); continue; }
@@ -1054,22 +1057,43 @@ async function createStockPosition(input) {
     return { triggered, deliveryErrors };
   }
 
-  async function getStockMarketQuotes(symbols) {
+  async function getStockMarketQuotes(symbols, { deliver = true } = {}) {
     if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
     const normalizedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
       .map((symbol) => String(symbol || '').trim().toUpperCase().split(':').pop())
       .filter(Boolean))];
-    const quotes = [];
-    for (const symbol of normalizedSymbols) {
+    const quotes = await Promise.all(normalizedSymbols.map(async (symbol) => {
       try {
         const quote = await quoteFetcher(symbol);
-        quotes.push({ ...quote, symbol });
+        return { ...quote, symbol };
       } catch (error) {
-        quotes.push({ symbol, error: error.message });
+        return { symbol, error: error.message };
       }
-    }
-    const alerts = await evaluateStockMarketAlerts(quotes);
+    }));
+    const alerts = await evaluateStockMarketAlerts(quotes, { deliver });
     return { quotes, updatedAt: new Date().toISOString(), alerts };
+  }
+
+  async function getDashboardStockAlerts() {
+    const unavailable = { configured: false, available: false, status: 'unconfigured', triggered: [], deliveryErrors: [], updatedAt: null };
+    try {
+      const settings = typeof finnhubSettings?.get === 'function' ? await finnhubSettings.get() : { configured: false };
+      if (!settings.configured) return unavailable;
+      if (typeof quoteFetcher !== 'function') return { ...unavailable, configured: true, status: 'unavailable', error: 'Finnhub 行情服务不可用。' };
+      const market = await getStockMarketQuotes(['UVXY', 'VOO', 'QQQ'], { deliver: false });
+      const validQuotes = market.quotes.filter((quote) => Number.isFinite(Number(quote.changePercent)));
+      if (!validQuotes.length) return { ...unavailable, configured: true, status: 'error', error: '行情未返回有效涨跌幅。', updatedAt: market.updatedAt };
+      return {
+        configured: true,
+        available: true,
+        status: 'ok',
+        triggered: market.alerts.triggered,
+        deliveryErrors: market.alerts.deliveryErrors,
+        updatedAt: market.updatedAt
+      };
+    } catch (error) {
+      return { ...unavailable, configured: true, status: 'error', error: error.message };
+    }
   }
 
   function getStockSettings() {
@@ -1502,13 +1526,6 @@ async function createStockPosition(input) {
     return getReplySession(session.id);
   }
 
-  function getDashboard() {
-    const packs = listPacks();
-    const tasks = listTasks('open');
-    const expiringItems = listExpiringItems();
-    const pendingCandidates = packs.flatMap((pack) => pack.retentionStatus === 'active' ? pack.candidates : []).length;
-    return { profile: getProfile(), materialCount: materialCount(), contentPackCount: packs.length, replySessionCount: db.prepare('SELECT COUNT(*) AS count FROM reply_sessions').get().count, expiringCount: packs.filter((pack) => pack.retentionStatus === 'expired').length, recentPacks: packs.slice(0, 5), tasks, expiringItems, pendingCandidateCount: pendingCandidates };
-  }
   function createReplyDraftEvent(draftId, type) {
     if (!['selected', 'copied', 'queued'].includes(type)) throw new Error('回复草稿行为无效。');
     const exists = db.prepare('SELECT id FROM reply_drafts WHERE id = ?').get(draftId);
@@ -1578,11 +1595,6 @@ async function createStockPosition(input) {
     };
   }
 
-  function dashboardDateKey(value = now()) {
-    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
-    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value));
-    return `${parts.find((part) => part.type === 'year').value}-${parts.find((part) => part.type === 'month').value}-${parts.find((part) => part.type === 'day').value}`;
-  }
 
   function lunarLabelForDate(dateKey) {
     try {
@@ -1594,13 +1606,13 @@ async function createStockPosition(input) {
     }
   }
 
-  function dashboardCalendar(tasks, expiringItems) {
+  function dashboardCalendar(tasks, expiringItems, currentTime = now()) {
     const events = [
-      ...tasks.filter((task) => task.dueDate).map((task) => ({ id: `task-${task.id}`, date: dashboardDateKey(task.dueDate), time: null, title: task.title, type: 'task', status: task.status, action: { label: '去处理', page: 'tasks' } })),
-      ...expiringItems.filter((item) => item.dueDate).map((item) => ({ id: `expiring-${item.id}`, date: dashboardDateKey(item.dueDate), time: item.dueAt ? new Date(item.dueAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }) : null, title: item.name, type: 'expiring', status: item.reminderStatus, action: { label: '去查看', page: 'expiring' } })),
+      ...tasks.filter((task) => task.dueDate).map((task) => ({ id: `task-${task.id}`, entityId: `task:${task.id}`, date: dashboardDateKey(task.dueDate), time: null, title: task.title, type: 'task', status: task.status, action: { label: '去处理', page: 'tasks', entityId: task.id } })),
+      ...expiringItems.filter((item) => item.dueDate).map((item) => ({ id: `expiring-${item.id}`, entityId: `expiring:${item.id}`, date: dashboardDateKey(item.dueDate), time: item.dueAt ? new Date(item.dueAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }) : null, title: item.name, type: 'expiring', status: item.reminderStatus, action: { label: '去查看', page: 'expiring', entityId: item.id } })),
     ];
     const eventDates = new Set(events.map((event) => event.date));
-    const today = dashboardDateKey();
+    const today = dashboardDateKey(currentTime);
     const todayDate = new Date(`${today}T00:00:00+08:00`);
     const days = Array.from({ length: 42 }, (_, index) => {
       const date = new Date(todayDate);
@@ -1611,31 +1623,29 @@ async function createStockPosition(input) {
     return { timezone: 'Asia/Shanghai', days, events };
   }
 
-  function dashboardPrompt(tasks, expiringItems) {
-    const overdue = expiringItems.find((item) => item.reminderStatus === 'overdue');
-    if (overdue) return { kind: 'expiring', priority: 100, title: `先处理已逾期事项：${overdue.name}`, reason: '有一项到期提醒已经逾期', action: { label: '去查看', page: 'expiring' } };
-    const today = dashboardDateKey();
-    const dueToday = expiringItems.find((item) => dashboardDateKey(item.dueDate) === today);
-    if (dueToday) return { kind: 'expiring', priority: 100, title: `今天先处理：${dueToday.name}`, reason: '这项到期提醒今天到期', action: { label: '去查看', page: 'expiring' } };
-    const task = tasks[0];
-    if (task) return { kind: 'tasks', priority: 20, title: `下一步处理：${task.title}`, reason: task.dueDate ? `待办截止日期为 ${task.dueDate}` : '收集箱中有一项未完成待办', action: { label: '去处理', page: 'tasks' } };
-    return null;
-  }
 
-  function dashboardPromptCandidates(tasks, expiringItems) {
-    const prompts = [];
-    const addExpiring = (items, priority, titlePrefix, reason) => items.forEach((item) => prompts.push({ kind: 'expiring', priority, title: `${titlePrefix}：${item.name}`, reason, action: { label: '去查看', page: 'expiring' } }));
-    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'overdue'), 100, '先处理已逾期事项', '有一项到期提醒已经逾期');
-    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'due'), 90, '今天先处理', '这项到期提醒今天到期');
-    tasks.forEach((task) => prompts.push({ kind: 'tasks', priority: 20, title: `下一步处理：${task.title}`, reason: task.dueDate ? `待办截止日期为 ${task.dueDate}` : '收集箱中有一项未完成待办', action: { label: '去处理', page: 'tasks' } }));
-    addExpiring(expiringItems.filter((item) => item.reminderStatus === 'upcoming'), 10, '提前看一眼', '这项到期提醒即将到期');
-    return prompts.length ? prompts : [{ kind: 'encouragement', priority: 0, title: '今天也留一点时间给重要的事', reason: '当前没有待处理的待办或到期提醒', action: { label: '查看工作台', page: 'dashboard-v2' } }];
-  }
 
-  function getDashboard() {
+  async function getDashboard() {
     const packs = listPacks();
     const tasks = listTasks('open');
     const expiringItems = listExpiringItems();
+    const promptGeneratedAt = asIso(undefined, now());
+    const contentPromptActions = packs
+      .filter((pack) => pack.retentionStatus === 'active')
+      .flatMap((pack) => pack.candidates
+        .filter((candidate) => candidate.plannedPublishTime)
+        .map((candidate) => {
+          const content = String(candidate.content || '').trim();
+          return {
+            id: candidate.id,
+            title: content.length > 60 ? `${content.slice(0, 60)}…` : content,
+            reason: `已加入 ${candidate.plannedPublishTime} 发布计划`,
+            date: candidate.plannedPublishTime,
+            updatedAt: candidate.createdAt,
+            action: { label: '去内容库', page: 'library', entityId: candidate.id }
+          };
+        }));
+    const specialDays = { configured: false, available: false, events: [] };
     const pendingCandidateCount = packs.flatMap((pack) => pack.retentionStatus === 'active' ? pack.candidates : []).length;
     const completedTaskCount = db.prepare("SELECT COUNT(*) AS count FROM personal_tasks WHERE status = 'completed'").get().count;
     const expiredCandidateCount = packs.flatMap((pack) => pack.retentionStatus !== 'active' ? pack.candidates : []).length;
@@ -1643,12 +1653,67 @@ async function createStockPosition(input) {
     const databaseSizeBytes = fs.statSync(databasePath).size;
     const backupSizeBytes = directorySize(backupDirectory);
     const frontendSizeBytes = directorySize(staticDirectory);
-    const calendar = dashboardCalendar(tasks, expiringItems);
-    const personalizedPrompts = dashboardPromptCandidates(tasks, expiringItems);
-    const personalizedPrompt = personalizedPrompts[0] || null;
+    const calendar = dashboardCalendar(tasks, expiringItems, promptGeneratedAt);
     const menstrualSettings = getMenstrualSettings();
     const menstrualCycles = menstrualSettings.menstrualEnabled ? listMenstrualCycles() : [];
-    return { profile: getProfile(), materialCount: materialCount(), contentPackCount: packs.length, replySessionCount: db.prepare('SELECT COUNT(*) AS count FROM reply_sessions').get().count, expiringCount: packs.filter((pack) => pack.retentionStatus === 'expired').length, recentPacks: packs.slice(0, 5), tasks, expiringItems, calendar, stockHistory: { available: false, points: [] }, personalizedPrompt, personalizedPrompts, privacy: menstrualSettings, menstrualPrediction: null, personalizedSources: { tasks: { configured: true, available: tasks.length > 0 }, expiring: { configured: true, available: expiringItems.length > 0 }, menstrual: { configured: menstrualSettings.menstrualEnabled, available: menstrualCycles.length > 0 }, stocks: { configured: true, available: false }, specialDays: { configured: false, available: false } }, pendingCandidateCount, taskStats: { open: tasks.length, completed: completedTaskCount }, candidateStats: { active: pendingCandidateCount, expired: expiredCandidateCount }, materialStats: { active: materialCount(), archived: archivedMaterialCount }, databasePath, databaseSizeBytes, dataLocations: { database: databasePath, backups: backupDirectory, frontend: staticDirectory, keychain: 'macOS Keychain (com.x-assistant.local-hub)' }, storageBreakdown: [{ key: 'sqlite', label: 'SQLite 数据库', bytes: databaseSizeBytes }, { key: 'backups', label: '加密备份', bytes: backupSizeBytes }, { key: 'frontend', label: '工作台前端', bytes: frontendSizeBytes }] };
+    const menstrualMoodLogs = menstrualSettings.menstrualEnabled ? listMenstrualMoodLogs() : [];
+    const menstrualPrediction = null;
+    const stockAlertResult = await getDashboardStockAlerts();
+    const personalizedPrompts = buildDashboardPromptCandidates({
+      tasks,
+      expiringItems,
+      calendarEvents: calendar.events,
+      menstrual: { enabled: menstrualSettings.menstrualEnabled, prediction: menstrualPrediction },
+      stocks: stockAlertResult,
+      content: { available: contentPromptActions.length > 0, actions: contentPromptActions },
+      specialDays,
+      now: promptGeneratedAt
+    });
+    const personalizedPrompt = personalizedPrompts[0] || null;
+    return {
+      profile: getProfile(),
+      materialCount: materialCount(),
+      contentPackCount: packs.length,
+      replySessionCount: db.prepare('SELECT COUNT(*) AS count FROM reply_sessions').get().count,
+      expiringCount: packs.filter((pack) => pack.retentionStatus === 'expired').length,
+      recentPacks: packs.slice(0, 5),
+      tasks,
+      expiringItems,
+      calendar,
+      contentPromptActions,
+      specialDays,
+      stockHistory: { available: false, points: [] },
+      stockAlertResult,
+      personalizedPrompt,
+      personalizedPrompts,
+      personalizedPromptGeneratedAt: promptGeneratedAt,
+      personalizedPromptTimeContext: dashboardTimeContext(promptGeneratedAt),
+      privacy: menstrualSettings,
+      menstrualCycles,
+      menstrualMoodLogs,
+      menstrualPrediction,
+      personalizedSources: {
+        tasks: { configured: true, available: tasks.length > 0 },
+        expiring: { configured: true, available: expiringItems.length > 0 },
+        calendar: { configured: true, available: calendar.events.length > 0 },
+        menstrual: { configured: menstrualSettings.menstrualEnabled, available: menstrualCycles.length > 0 || Boolean(menstrualPrediction) },
+        stocks: { configured: stockAlertResult.configured, available: stockAlertResult.available, status: stockAlertResult.status },
+        content: { configured: true, available: contentPromptActions.length > 0 },
+        specialDays: { configured: specialDays.configured, available: specialDays.available },
+      },
+      pendingCandidateCount,
+      taskStats: { open: tasks.length, completed: completedTaskCount },
+      candidateStats: { active: pendingCandidateCount, expired: expiredCandidateCount },
+      materialStats: { active: materialCount(), archived: archivedMaterialCount },
+      databasePath,
+      databaseSizeBytes,
+      dataLocations: { database: databasePath, backups: backupDirectory, frontend: staticDirectory, keychain: 'macOS Keychain (com.x-assistant.local-hub)' },
+      storageBreakdown: [
+        { key: 'sqlite', label: 'SQLite 数据库', bytes: databaseSizeBytes },
+        { key: 'backups', label: '加密备份', bytes: backupSizeBytes },
+        { key: 'frontend', label: '工作台前端', bytes: frontendSizeBytes }
+      ]
+    };
   }
 
   async function readRawBody(request) {
@@ -1803,7 +1868,7 @@ async function createStockPosition(input) {
       if (request.method === 'GET' && pathname === '/v1/pairing-code') return sendJson(response, 200, pairingCode());
       if (request.method === 'POST' && pathname === '/v1/pairings') return sendJson(response, 201, createExtensionToken(origin, (await parseRequest(request)).code));
       if (!isAuthorizedExtension(request)) return sendJson(response, 401, { error: '本机服务未配对或访问令牌已失效。' });
-      if (request.method === 'GET' && pathname === '/v1/dashboard') return sendJson(response, 200, getDashboard());
+      if (request.method === 'GET' && pathname === '/v1/dashboard') return sendJson(response, 200, await getDashboard());
       if (request.method === 'GET' && pathname === '/v1/model-settings') {
         return sendJson(response, 200, typeof modelSettings?.get === 'function' ? await modelSettings.get() : { configured: false });
       }

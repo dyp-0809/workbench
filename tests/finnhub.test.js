@@ -92,3 +92,55 @@ test('刷新现价只更新美股持仓并保存报价时间', async () => {
     assert.equal(untouchedHk.priceUpdatedAt, null);
   });
 });
+
+test('首页复用既有股票预警结果并在行情失败时保持局部状态', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-dashboard-stock-'));
+  const quoteCalls = [];
+  const hub = createContentHub({
+    dataDirectory: directory,
+    finnhubSettings: { get: async () => ({ configured: true, provider: 'Finnhub' }) },
+    quoteFetcher: async (symbol) => {
+      quoteCalls.push(symbol);
+      return { symbol, currentPrice: 100, changePercent: symbol === 'UVXY' ? 16 : symbol === 'VOO' ? -2.5 : 0, quotedAt: '2026-08-13T00:00:00.000Z' };
+    }
+  });
+  const address = await hub.listen(0);
+  try {
+    const dashboard = await (await fetch(`http://127.0.0.1:${address.port}/v1/dashboard`)).json();
+    assert.deepEqual(quoteCalls, ['UVXY', 'VOO', 'QQQ']);
+    assert.equal(dashboard.stockAlertResult.status, 'ok');
+    assert.equal(dashboard.stockAlertResult.triggered.length, 2);
+    assert.equal(dashboard.personalizedPrompts[0].kind, 'stocks');
+    assert.equal(dashboard.personalizedPrompts[0].action.page, 'stock-market');
+    assert.equal(dashboard.personalizedSources.stocks.available, true);
+  } finally {
+    await hub.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('股票行情失败不覆盖其他来源的首页候选', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-dashboard-stock-failure-'));
+  const hub = createContentHub({
+    dataDirectory: directory,
+    finnhubSettings: { get: async () => ({ configured: true, provider: 'Finnhub' }) },
+    quoteFetcher: async () => { throw new Error('行情服务超时'); }
+  });
+  const address = await hub.listen(0);
+  try {
+    await fetch(`http://127.0.0.1:${address.port}/v1/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '处理失败回退' })
+    });
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/dashboard`);
+    const dashboard = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(dashboard.stockAlertResult.status, 'error');
+    assert.equal(dashboard.personalizedSources.stocks.available, false);
+    assert.equal(dashboard.personalizedPrompts[0].kind, 'tasks');
+  } finally {
+    await hub.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

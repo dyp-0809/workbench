@@ -93,7 +93,7 @@ function ExpiringForm({ value, onChange, tags = [] }) {
   );
 }
 
-function ExpiringItemsPage() {
+function ExpiringItemsPage({ focusId = null }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -102,6 +102,11 @@ function ExpiringItemsPage() {
   const [input, setInput] = useState({ name: '', notes: '', category: '', mode: 'once', dueAt: null, intervalValue: 1, intervalUnit: 'day', advanceValue: 0, advanceUnit: 'day' });
   const load = async () => { setLoading(true); try { setItems((await api('/expiring-items')).items); } finally { setLoading(false); } };
   useEffect(() => { load().catch(() => setItems([])); api('/bark-settings').then(setBark).catch(() => {}); }, []);
+
+  useEffect(() => {
+    if (!focusId || loading) return;
+    document.querySelector('[data-focus-target="expiring"]')?.scrollIntoView({ block: 'center' });
+  }, [focusId, loading, items]);
   const save = async () => { setSaving(true); try { const body = { name: input.name, notes: input.notes, category: input.category, mode: input.mode, dueAt: input.dueAt ? input.dueAt.toISOString() : undefined, advanceValue: input.advanceValue, advanceUnit: input.advanceUnit }; if (input.mode !== 'once') { body.intervalValue = input.intervalValue; body.intervalUnit = input.intervalUnit; } await api('/expiring-items', { method: 'POST', body: JSON.stringify(body) }); setInput({ name: '', notes: '', category: '', mode: 'once', dueAt: null, intervalValue: 1, intervalUnit: 'day', advanceValue: 0, advanceUnit: 'day' }); setCreateOpen(false); await load(); } finally { setSaving(false); } };
   const confirm = async (id) => { await api(`/expiring-items/${id}/confirm`, { method: 'POST' }); await load(); };
   const remove = async (id) => { await api(`/expiring-items/${id}`, { method: 'DELETE' }); await load(); };
@@ -129,7 +134,7 @@ function ExpiringItemsPage() {
           </TableHeader>
           <TableBody>
             {items.map((item) => (
-              <TableRow key={item.id}>
+              <TableRow key={item.id} data-focus-target={focusId === item.id ? 'expiring' : undefined}>
                 <TableCell>
                   <div className="flex items-center gap-2 font-medium">{item.name}{item.category && <Badge variant="outline" size="sm">{item.category}</Badge>}</div>
                   {item.notes && <div className="mt-0.5 text-xs text-foreground-muted">{item.notes}</div>}

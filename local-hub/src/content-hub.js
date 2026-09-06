@@ -33,6 +33,57 @@ const DEFAULT_STOCK_SYMBOLS = [
   { symbol: 'TSLA', name: '特斯拉', market: 'US' }
 ];
 
+const DEFAULT_PROGRAMMING_RECORD_CATEGORIES = [
+  { id: 'programming-tools', name: '工具', sortOrder: 0 },
+  { id: 'programming-ai', name: 'AI', sortOrder: 1 },
+  { id: 'programming-collections', name: '汇总', sortOrder: 2 },
+  { id: 'programming-ui-frameworks', name: 'UI 框架', sortOrder: 3 },
+  { id: 'programming-source-libraries', name: '来源库', sortOrder: 4 },
+  { id: 'programming-frontend', name: '前端', sortOrder: 5 },
+  { id: 'programming-backend', name: '后端', sortOrder: 6 }
+];
+const PROGRAMMING_TRACKING_PARAMETER = /^(?:utm_.+|fbclid|gclid|mc_cid|mc_eid)$/i;
+
+function normalizeProgrammingText(value) {
+  return String(value || '').trim().normalize('NFKC');
+}
+
+function normalizeProgrammingRecordUrl(value) {
+  const sourceUrl = String(value || '').trim();
+  if (!sourceUrl) throw new Error('记录地址不能为空。');
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error('记录地址必须是有效 URL。');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('记录地址只支持 http 或 https。');
+  if (parsed.username || parsed.password) throw new Error('记录地址不能包含账号或密码。');
+  parsed.protocol = parsed.protocol.toLowerCase();
+  parsed.hostname = parsed.hostname.toLowerCase();
+  if ((parsed.protocol === 'http:' && parsed.port === '80') || (parsed.protocol === 'https:' && parsed.port === '443')) parsed.port = '';
+  parsed.hash = '';
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (PROGRAMMING_TRACKING_PARAMETER.test(key)) parsed.searchParams.delete(key);
+  }
+  if (parsed.pathname !== '/') parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  return { url: sourceUrl, normalizedUrl: parsed.toString() };
+}
+
+function seedProgrammingRecordCategories(db) {
+  const timestamp = asIso();
+  const insert = db.prepare(`INSERT OR IGNORE INTO programming_record_categories(
+    id, name, normalized_name, sort_order, is_active, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 1, ?, ?)`);
+  const seed = db.transaction(() => {
+    for (const category of DEFAULT_PROGRAMMING_RECORD_CATEGORIES) {
+      insert.run(category.id, category.name, normalizeProgrammingText(category.name).toLowerCase(), category.sortOrder, timestamp, timestamp);
+    }
+  });
+  seed();
+}
+
+
 function createId() {
   return crypto.randomUUID();
 }
@@ -448,6 +499,53 @@ function initializeSchema(db) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS programming_records (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      normalized_url TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      github_owner TEXT,
+      github_repository TEXT,
+      source_stars INTEGER,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+      archived_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS programming_records_status_updated
+      ON programming_records(status, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS programming_record_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL UNIQUE,
+      sort_order INTEGER NOT NULL,
+      is_active INTEGER NOT NULL CHECK(is_active IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS programming_record_category_links (
+      record_id TEXT NOT NULL REFERENCES programming_records(id) ON DELETE CASCADE,
+      category_id TEXT NOT NULL REFERENCES programming_record_categories(id),
+      PRIMARY KEY(record_id, category_id)
+    );
+    CREATE INDEX IF NOT EXISTS programming_record_category_links_category
+      ON programming_record_category_links(category_id, record_id);
+    CREATE TABLE IF NOT EXISTS programming_tags (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS programming_record_tag_links (
+      record_id TEXT NOT NULL REFERENCES programming_records(id) ON DELETE CASCADE,
+      tag_id TEXT NOT NULL REFERENCES programming_tags(id),
+      PRIMARY KEY(record_id, tag_id)
+    );
+    CREATE INDEX IF NOT EXISTS programming_record_tag_links_tag
+      ON programming_record_tag_links(tag_id, record_id);
   `);
   migrateExpiringItems(db);
   migrateStockPositions(db);
@@ -455,6 +553,7 @@ function initializeSchema(db) {
   migrateStockEntryPlans(db);
   migrateContentCandidates(db);
   seedStockSymbols(db);
+  seedProgrammingRecordCategories(db);
 }
 function createContentHub(options = {}) {
   const now = options.now || (() => new Date());
@@ -508,6 +607,278 @@ function createContentHub(options = {}) {
     if (!origin?.startsWith('chrome-extension://')) return true;
     const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
     return Boolean(token && db.prepare('SELECT token_hash FROM extension_tokens WHERE token_hash = ? AND extension_origin = ? AND revoked_at IS NULL').get(tokenHash(token), origin));
+  }
+
+  function mapProgrammingRecordCategory(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      isActive: Boolean(row.is_active),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function listProgrammingRecordCategories() {
+    return db.prepare(`SELECT id, name, is_active, created_at, updated_at
+      FROM programming_record_categories
+      ORDER BY sort_order, name COLLATE NOCASE`).all().map(mapProgrammingRecordCategory);
+  }
+
+  function createProgrammingRecordCategory(input = {}) {
+    const name = normalizeProgrammingText(input.name);
+    if (!name) throw new Error('分类名称不能为空。');
+    const normalizedName = name.toLocaleLowerCase();
+    if (db.prepare('SELECT id FROM programming_record_categories WHERE normalized_name = ?').get(normalizedName)) {
+      throw new Error('分类名称已存在。');
+    }
+    const timestamp = asIso(undefined, now());
+    const category = {
+      id: createId(),
+      name,
+      normalizedName,
+      sortOrder: db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM programming_record_categories').get().value,
+      isActive: true,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    db.prepare(`INSERT INTO programming_record_categories(
+      id, name, normalized_name, sort_order, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(category.id, category.name, category.normalizedName, category.sortOrder, Number(category.isActive), category.createdAt, category.updatedAt);
+    return mapProgrammingRecordCategory(db.prepare('SELECT id, name, is_active, created_at, updated_at FROM programming_record_categories WHERE id = ?').get(category.id));
+  }
+
+  function updateProgrammingRecordCategory(id, input = {}) {
+    const current = db.prepare('SELECT * FROM programming_record_categories WHERE id = ?').get(id);
+    if (!current) return null;
+    const name = input.name === undefined ? current.name : normalizeProgrammingText(input.name);
+    if (!name) throw new Error('分类名称不能为空。');
+    const normalizedName = name.toLocaleLowerCase();
+    if (normalizedName !== current.normalized_name && db.prepare('SELECT id FROM programming_record_categories WHERE normalized_name = ?').get(normalizedName)) {
+      throw new Error('分类名称已存在。');
+    }
+    const isActive = input.isActive === undefined ? Boolean(current.is_active) : input.isActive;
+    if (typeof isActive !== 'boolean') throw new Error('分类状态必须是布尔值。');
+    const updatedAt = asIso(undefined, now());
+    db.prepare(`UPDATE programming_record_categories
+      SET name = ?, normalized_name = ?, is_active = ?, updated_at = ?
+      WHERE id = ?`).run(name, normalizedName, Number(isActive), updatedAt, id);
+    return mapProgrammingRecordCategory(db.prepare('SELECT id, name, is_active, created_at, updated_at FROM programming_record_categories WHERE id = ?').get(id));
+  }
+
+  function normalizeProgrammingRecordCategoryIds(input, associatedCategoryIds = []) {
+    const ids = [...new Set((Array.isArray(input) ? input : []).map((id) => String(id || '').trim()).filter(Boolean))];
+    if (!ids.length) return ids;
+    const placeholders = ids.map(() => '?').join(', ');
+    const categories = db.prepare(`SELECT id, is_active FROM programming_record_categories WHERE id IN (${placeholders})`).all(...ids);
+    if (categories.length !== ids.length) throw new Error('所选分类不存在。');
+    const associated = new Set(associatedCategoryIds);
+    if (categories.some((category) => !category.is_active && !associated.has(category.id))) throw new Error('不能为记录添加已停用分类。');
+    return ids;
+  }
+
+  function normalizeProgrammingRecordTags(input) {
+    const tags = [];
+    const seen = new Set();
+    for (const value of Array.isArray(input) ? input : []) {
+      const name = normalizeProgrammingText(value);
+      const normalizedName = name.toLocaleLowerCase();
+      if (!name || seen.has(normalizedName)) continue;
+      seen.add(normalizedName);
+      tags.push({ name, normalizedName });
+    }
+    return tags;
+  }
+
+  function replaceProgrammingRecordCategories(recordId, categoryIds) {
+    db.prepare('DELETE FROM programming_record_category_links WHERE record_id = ?').run(recordId);
+    const linkCategory = db.prepare('INSERT INTO programming_record_category_links(record_id, category_id) VALUES (?, ?)');
+    for (const categoryId of categoryIds) linkCategory.run(recordId, categoryId);
+  }
+
+  function replaceProgrammingRecordTags(recordId, tags, timestamp) {
+    db.prepare('DELETE FROM programming_record_tag_links WHERE record_id = ?').run(recordId);
+    const insertTag = db.prepare(`INSERT OR IGNORE INTO programming_tags(id, name, normalized_name, created_at)
+      VALUES (?, ?, ?, ?)`);
+    const findTag = db.prepare('SELECT id FROM programming_tags WHERE normalized_name = ?');
+    const linkTag = db.prepare('INSERT INTO programming_record_tag_links(record_id, tag_id) VALUES (?, ?)');
+    for (const tag of tags) {
+      insertTag.run(createId(), tag.name, tag.normalizedName, timestamp);
+      linkTag.run(recordId, findTag.get(tag.normalizedName).id);
+    }
+  }
+
+  function programmingRecordCategoriesFor(recordId) {
+    return db.prepare(`SELECT c.id, c.name, c.is_active, c.created_at, c.updated_at
+      FROM programming_record_category_links link
+      JOIN programming_record_categories c ON c.id = link.category_id
+      WHERE link.record_id = ?
+      ORDER BY c.sort_order, c.name COLLATE NOCASE`).all(recordId).map(mapProgrammingRecordCategory);
+  }
+
+  function programmingRecordTagsFor(recordId) {
+    return db.prepare(`SELECT tag.name
+      FROM programming_record_tag_links link
+      JOIN programming_tags tag ON tag.id = link.tag_id
+      WHERE link.record_id = ?
+      ORDER BY tag.name COLLATE NOCASE`).all(recordId).map((tag) => tag.name);
+  }
+
+  function mapProgrammingRecord(row) {
+    return {
+      id: row.id,
+      url: row.url,
+      normalizedUrl: row.normalized_url,
+      title: row.title,
+      summary: row.summary,
+      notes: row.notes,
+      sourceType: row.source_type,
+      githubOwner: row.github_owner,
+      githubRepository: row.github_repository,
+      stars: row.source_stars === null ? null : Number(row.source_stars),
+      status: row.status,
+      archivedAt: row.archived_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      categories: programmingRecordCategoriesFor(row.id),
+      tags: programmingRecordTagsFor(row.id)
+    };
+  }
+
+  function findProgrammingRecordByNormalizedUrl(normalizedUrl) {
+    const row = db.prepare('SELECT * FROM programming_records WHERE normalized_url = ?').get(normalizedUrl);
+    return row ? mapProgrammingRecord(row) : null;
+  }
+
+  function getProgrammingRecord(id) {
+    const row = db.prepare('SELECT * FROM programming_records WHERE id = ?').get(id);
+    return row ? mapProgrammingRecord(row) : null;
+  }
+
+  function listProgrammingRecords(filters = {}) {
+    const conditions = [];
+    const parameters = [];
+    const status = filters.status === 'archived' ? 'archived' : filters.status === 'all' ? null : 'active';
+    if (status) {
+      conditions.push('r.status = ?');
+      parameters.push(status);
+    }
+    const categoryIds = [...new Set((Array.isArray(filters.categoryIds) ? filters.categoryIds : []).map((id) => String(id || '').trim()).filter(Boolean))];
+    if (categoryIds.length) {
+      conditions.push(`EXISTS (SELECT 1 FROM programming_record_category_links link
+        WHERE link.record_id = r.id AND link.category_id IN (${categoryIds.map(() => '?').join(', ')}))`);
+      parameters.push(...categoryIds);
+    }
+    if (filters.unclassified) {
+      conditions.push(`NOT EXISTS (SELECT 1 FROM programming_record_category_links link
+        JOIN programming_record_categories category ON category.id = link.category_id
+        WHERE link.record_id = r.id AND category.is_active = 1)`);
+    }
+    const query = normalizeProgrammingText(filters.query);
+    if (query) {
+      const pattern = `%${query}%`;
+      conditions.push(`(r.title LIKE ? OR r.summary LIKE ? OR r.notes LIKE ? OR r.github_owner LIKE ? OR r.github_repository LIKE ?
+        OR EXISTS (SELECT 1 FROM programming_record_tag_links link
+          JOIN programming_tags tag ON tag.id = link.tag_id
+          WHERE link.record_id = r.id AND tag.name LIKE ?))`);
+      parameters.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sort = {
+      updatedAt: 'r.updated_at DESC, r.id DESC',
+      createdAt: 'r.created_at DESC, r.id DESC',
+      title: 'r.title COLLATE NOCASE ASC, r.id ASC',
+      stars: 'r.source_stars IS NULL, r.source_stars DESC, r.updated_at DESC, r.id DESC'
+    }[filters.sort] || 'r.updated_at DESC, r.id DESC';
+    const requestedPage = Number.parseInt(filters.page, 10);
+    const requestedPageSize = Number.parseInt(filters.pageSize, 10);
+    const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const pageSize = Number.isInteger(requestedPageSize) && requestedPageSize > 0 ? Math.min(requestedPageSize, 100) : 20;
+    const total = db.prepare(`SELECT COUNT(*) AS count FROM programming_records r ${where}`).get(...parameters).count;
+    const rows = db.prepare(`SELECT r.* FROM programming_records r ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`)
+      .all(...parameters, pageSize, (page - 1) * pageSize);
+    return { records: rows.map(mapProgrammingRecord), total, page, pageSize };
+  }
+
+  function createProgrammingRecord(input = {}) {
+    const source = normalizeProgrammingRecordUrl(input.url);
+    const title = normalizeProgrammingText(input.title);
+    if (!title) throw new Error('记录标题不能为空。');
+    const summary = normalizeProgrammingText(input.summary);
+    const notes = normalizeProgrammingText(input.notes);
+    const categoryIds = normalizeProgrammingRecordCategoryIds(input.categoryIds);
+    const tags = normalizeProgrammingRecordTags(input.tags);
+    const existingRecord = findProgrammingRecordByNormalizedUrl(source.normalizedUrl);
+    if (existingRecord) return { existingRecord };
+    const timestamp = asIso(undefined, now());
+    const record = {
+      id: createId(),
+      ...source,
+      title,
+      summary,
+      notes,
+      sourceType: 'manual',
+      status: 'active',
+      archivedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const save = db.transaction(() => {
+      db.prepare(`INSERT INTO programming_records(
+        id, url, normalized_url, title, summary, notes, source_type, github_owner, github_repository,
+        source_stars, status, archived_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`)
+        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.status, record.archivedAt, record.createdAt, record.updatedAt);
+      replaceProgrammingRecordCategories(record.id, categoryIds);
+      replaceProgrammingRecordTags(record.id, tags, timestamp);
+    });
+    try {
+      save();
+    } catch (error) {
+      if (/programming_records\.normalized_url/.test(String(error.message))) {
+        const duplicate = findProgrammingRecordByNormalizedUrl(source.normalizedUrl);
+        if (duplicate) return { existingRecord: duplicate };
+      }
+      throw error;
+    }
+    return { record: mapProgrammingRecord(db.prepare('SELECT * FROM programming_records WHERE id = ?').get(record.id)) };
+  }
+
+  function updateProgrammingRecord(id, input = {}) {
+    const existing = db.prepare('SELECT * FROM programming_records WHERE id = ?').get(id);
+    if (!existing) return null;
+    const source = input.url === undefined
+      ? { url: existing.url, normalizedUrl: existing.normalized_url }
+      : normalizeProgrammingRecordUrl(input.url);
+    const duplicate = db.prepare('SELECT * FROM programming_records WHERE normalized_url = ? AND id != ?').get(source.normalizedUrl, id);
+    if (duplicate) return { existingRecord: mapProgrammingRecord(duplicate) };
+    const title = input.title === undefined ? existing.title : normalizeProgrammingText(input.title);
+    if (!title) throw new Error('记录标题不能为空。');
+    const summary = input.summary === undefined ? existing.summary : normalizeProgrammingText(input.summary);
+    const notes = input.notes === undefined ? existing.notes : normalizeProgrammingText(input.notes);
+    const currentCategoryIds = programmingRecordCategoriesFor(id).map((category) => category.id);
+    const categoryIds = input.categoryIds === undefined
+      ? null
+      : normalizeProgrammingRecordCategoryIds(input.categoryIds, currentCategoryIds);
+    const tags = input.tags === undefined ? null : normalizeProgrammingRecordTags(input.tags);
+    const status = input.status === undefined ? existing.status : input.status;
+    if (!['active', 'archived'].includes(status)) throw new Error('记录状态无效。');
+    const updatedAt = asIso(undefined, now());
+    const archivedAt = status === 'archived' ? existing.archived_at || updatedAt : null;
+    const save = db.transaction(() => {
+      db.prepare(`UPDATE programming_records
+        SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, status = ?, archived_at = ?, updated_at = ?
+        WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, status, archivedAt, updatedAt, id);
+      if (categoryIds !== null) replaceProgrammingRecordCategories(id, categoryIds);
+      if (tags !== null) replaceProgrammingRecordTags(id, tags, updatedAt);
+    });
+    save();
+    return { record: mapProgrammingRecord(db.prepare('SELECT * FROM programming_records WHERE id = ?').get(id)) };
+  }
+
+  function deleteProgrammingRecord(id) {
+    return db.prepare('DELETE FROM programming_records WHERE id = ?').run(id).changes > 0;
   }
 
   function getProfile() {
@@ -1805,7 +2176,8 @@ async function createStockPosition(input) {
     const tables = Object.keys(snapshot.tables).filter((table) => available.has(table));
     if (!tables.length) throw new Error('备份不包含可恢复的数据。');
     fs.writeFileSync(path.join(backupDirectory, `before-restore-${Date.now()}.json`), encryptBackup(snapshotDatabase(), password), { mode: 0o600 });
-    db.transaction(() => {
+    const foreignKeysEnabled = Boolean(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+    const restore = db.transaction(() => {
       for (const table of tables) db.prepare(`DELETE FROM "${table}"`).run();
       for (const table of tables) {
         const rows = Array.isArray(snapshot.tables[table]) ? snapshot.tables[table] : [];
@@ -1814,7 +2186,15 @@ async function createStockPosition(input) {
         const insert = db.prepare(`INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((column) => `@${column}`).join(', ')})`);
         for (const row of rows) insert.run(row);
       }
-    })();
+      const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
+      if (foreignKeyViolations.length) throw new Error('备份包含无效关联。');
+    });
+    db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      restore();
+    } finally {
+      if (foreignKeysEnabled) db.exec('PRAGMA foreign_keys = ON;');
+    }
     return { restoredAt: now().toISOString(), tableCount: tables.length };
   }
 
@@ -1919,6 +2299,52 @@ async function createStockPosition(input) {
       }
       if (request.method === 'GET' && pathname === '/v1/profile') return sendJson(response, 200, { profile: getProfile() });
       if (request.method === 'PUT' && pathname === '/v1/preference-overrides') return sendJson(response, 200, { preference: setPreferenceOverride(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/programming-records/categories') {
+        return sendJson(response, 200, { categories: listProgrammingRecordCategories() });
+      }
+      if (request.method === 'POST' && pathname === '/v1/programming-records/categories') {
+        return sendJson(response, 201, { category: createProgrammingRecordCategory(await parseRequest(request)) });
+      }
+      const programmingRecordCategoryMatch = pathname.match(/^\/v1\/programming-records\/categories\/([^/]+)$/);
+      if (programmingRecordCategoryMatch && request.method === 'PATCH') {
+        const category = updateProgrammingRecordCategory(programmingRecordCategoryMatch[1], await parseRequest(request));
+        return category ? sendJson(response, 200, { category }) : sendJson(response, 404, { error: '分类不存在。' });
+      }
+      if (request.method === 'GET' && pathname === '/v1/programming-records') {
+        const categoryIds = String(url.searchParams.get('categoryIds') || '').split(',').map((id) => id.trim()).filter(Boolean);
+        return sendJson(response, 200, listProgrammingRecords({
+          query: url.searchParams.get('query') || '',
+          categoryIds,
+          status: url.searchParams.get('status') || 'active',
+          unclassified: url.searchParams.get('unclassified') === 'true',
+          sort: url.searchParams.get('sort') || 'updatedAt',
+          page: url.searchParams.get('page'),
+          pageSize: url.searchParams.get('pageSize')
+        }));
+      }
+      if (request.method === 'POST' && pathname === '/v1/programming-records') {
+        const result = createProgrammingRecord(await parseRequest(request));
+        return result.existingRecord
+          ? sendJson(response, 409, { error: '该地址已经存在。', existingRecord: result.existingRecord })
+          : sendJson(response, 201, result);
+      }
+      const programmingRecordMatch = pathname.match(/^\/v1\/programming-records\/([^/]+)$/);
+      if (programmingRecordMatch && request.method === 'GET') {
+        const record = getProgrammingRecord(programmingRecordMatch[1]);
+        return record ? sendJson(response, 200, { record }) : sendJson(response, 404, { error: '编程记录不存在。' });
+      }
+      if (programmingRecordMatch && request.method === 'PATCH') {
+        const result = updateProgrammingRecord(programmingRecordMatch[1], await parseRequest(request));
+        if (!result) return sendJson(response, 404, { error: '编程记录不存在。' });
+        return result.existingRecord
+          ? sendJson(response, 409, { error: '该地址已经存在。', existingRecord: result.existingRecord })
+          : sendJson(response, 200, result);
+      }
+      if (programmingRecordMatch && request.method === 'DELETE') {
+        return deleteProgrammingRecord(programmingRecordMatch[1])
+          ? sendJson(response, 204, {})
+          : sendJson(response, 404, { error: '编程记录不存在。' });
+      }
       if (request.method === 'GET' && pathname === '/v1/expiring-items') return sendJson(response, 200, { items: listExpiringItems() });
       if (request.method === 'POST' && pathname === '/v1/expiring-items') return sendJson(response, 201, { item: createExpiringItem(await parseRequest(request)) });
       const expiringItemMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)$/);

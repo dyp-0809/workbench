@@ -25,7 +25,12 @@ async function api(path, options = {}) {
     const response = await fetch(`/v1${path}`, { headers: { 'Content-Type': 'application/json' }, ...options });
     if (response.status === 204) return null;
     const payload = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(payload?.error || `请求失败（HTTP ${response.status}）。`);
+    if (!response.ok) {
+      const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）。`);
+      error.payload = payload;
+      error.status = response.status;
+      throw error;
+    }
     return payload;
   } catch (error) {
     throw reportApiError(error, requestId);

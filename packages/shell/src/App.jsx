@@ -34,6 +34,7 @@ import { ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesP
 import { StockPositionsPage, StockEntryPlansPage, StockMarketPage } from '@personal-workbench/module-stock';
 import { MenstrualCyclePage } from '@personal-workbench/module-cycle';
 import { KindlePage } from '@personal-workbench/module-kindle';
+import { ProgrammingRecordsPage } from '@personal-workbench/module-records';
 
 const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const MENU_STORAGE_KEY = 'x-assistant-navigation';
@@ -49,6 +50,9 @@ const defaultNavigationGroups = [
     { key: 'stock-entry-plans', label: '待开仓股票', iconName: 'Target' },
     { key: 'stock-market', label: '市场', iconName: 'ChartLine' },
     { key: 'stock-positions', label: '仓位管理', iconName: 'Wallet' }
+  ] },
+  { id: 'programming', label: '编程', iconName: 'Books', items: [
+    { key: 'programming-records', label: '记录', iconName: 'Book' }
   ] },
   { id: 'x', label: 'X ASSISTANT', iconName: 'BrandX', items: [
     { key: 'x-overview', label: 'X 概览', iconName: 'LayoutDashboard' },
@@ -97,13 +101,14 @@ const settingsSections = [
 const X_ASSISTANT_KEYS = ['x-overview', 'library', 'archive', 'materials', 'replies', 'style', 'analytics-v2'];
 const STOCK_KEYS = ['stock-entry-plans', 'stock-market', 'stock-positions'];
 const HEALTH_KEYS = ['menstrual-cycle'];
-const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS, health: HEALTH_KEYS };
+const PROGRAMMING_KEYS = ['programming-records'];
+const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS, health: HEALTH_KEYS, programming: PROGRAMMING_KEYS };
 const pageLabels = new Map([
   ['dashboard-v2', '首页'], ['tasks', '待办事项'], ['expiring', '到期与提醒'], ['x-overview', 'X 概览'], ['library', '内容库'], ['archive', '内容归档'], ['materials', '素材库'],
   ['kindle', 'Kindle'],
-  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-positions', '仓位管理'], ['menstrual-cycle', '经期'], ['settings', '设置']
+  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-positions', '仓位管理'], ['menstrual-cycle', '经期'], ['programming-records', '记录'], ['settings', '设置']
 ]);
-const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'x-overview': '/x-overview', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'settings': '/settings' };
+const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'x-overview': '/x-overview', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'programming-records': '/programming/records', 'settings': '/settings' };
 function pageFromPath(pathname) {
   if (pathname === '/stock/stats') return 'stock-positions';
   const entry = Object.entries(PAGE_PATHS).find(([, path]) => path === pathname);
@@ -378,6 +383,7 @@ function AppInner() {
                       </NavigationLink>
                     </NavigationItem>
                   ))}
+            {page === 'programming-records' && <ProgrammingRecordsPage />}
                 </NavigationList>
               </Navigation>
             </div>

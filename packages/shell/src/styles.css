@@ -4,6 +4,7 @@
 @source '../../../node_modules/@appica/ui-react/dist';
 @source './components';
 @source '../../module-kindle/src';
+@source '../../module-records/src';
 @source './lib';
 
 @theme inline {

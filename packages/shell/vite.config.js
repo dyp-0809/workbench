@@ -17,7 +17,8 @@ export default defineConfig({
       '@personal-workbench/module-x': path.resolve(root, '../module-x/src/index.js'),
       '@personal-workbench/module-stock': path.resolve(root, '../module-stock/src/index.js'),
       '@personal-workbench/module-cycle': path.resolve(root, '../module-cycle/src/index.js'),
-      '@personal-workbench/module-kindle': path.resolve(root, '../module-kindle/src/index.js')
+      '@personal-workbench/module-kindle': path.resolve(root, '../module-kindle/src/index.js'),
+      '@personal-workbench/module-records': path.resolve(root, '../module-records/src/index.js')
     }
   },
   server: {

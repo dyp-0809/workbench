@@ -12,6 +12,7 @@ const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require
 const { runKindleSync } = require('./kindle-sync');
 const { buildDashboardPromptCandidates, dashboardTimeContext, dashboardDateKey } = require('./dashboard-prompts');
 const { createPublicWebCapture } = require('./public-web-capture');
+const { createGitHubRepositoryCapture, parseGitHubRepositoryUrl } = require('./github-repository-capture');
 const DEFAULT_STOCK_ALERT_RULES = [
   { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
   { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
@@ -68,6 +69,8 @@ function normalizeProgrammingRecordUrl(value) {
     if (PROGRAMMING_TRACKING_PARAMETER.test(key)) parsed.searchParams.delete(key);
   }
   if (parsed.pathname !== '/') parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  const githubRepository = parseGitHubRepositoryUrl(parsed);
+  if (githubRepository) return { url: sourceUrl, normalizedUrl: githubRepository.normalizedUrl };
   return { url: sourceUrl, normalizedUrl: parsed.toString() };
 }
 
@@ -85,17 +88,85 @@ function normalizeProgrammingRecordSnapshotUrl(value) {
   return parsed.toString();
 }
 
+function normalizeProgrammingRecordGitHubSnapshot(input, sourceCanonicalUrl = null) {
+  if (input === null || input === undefined) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('GitHub 来源快照无效。');
+  const owner = normalizeProgrammingText(input.owner).slice(0, 100);
+  const repository = normalizeProgrammingText(input.repository).slice(0, 100);
+  const canonicalUrl = sourceCanonicalUrl || normalizeProgrammingRecordSnapshotUrl(input.canonicalUrl);
+  const parsedRepository = canonicalUrl ? parseGitHubRepositoryUrl(canonicalUrl) : null;
+  if (!owner || !repository || !parsedRepository
+    || parsedRepository.owner.toLocaleLowerCase() !== owner.toLocaleLowerCase()
+    || parsedRepository.repository.toLocaleLowerCase() !== repository.toLocaleLowerCase()) {
+    throw new Error('GitHub 来源快照无效。');
+  }
+  const rawStars = input.stars;
+  const stars = rawStars === null || rawStars === undefined || rawStars === ''
+    ? null
+    : Number(rawStars);
+  if (stars !== null && (!Number.isSafeInteger(stars) || stars < 0)) throw new Error('GitHub Stars 无效。');
+  const topics = [];
+  const seen = new Set();
+  for (const value of Array.isArray(input.topics) ? input.topics : []) {
+    const name = normalizeProgrammingText(value).slice(0, 100);
+    const normalizedName = name.toLocaleLowerCase();
+    if (!name || seen.has(normalizedName)) continue;
+    seen.add(normalizedName);
+    topics.push(name);
+  }
+  return {
+    owner,
+    repository,
+    language: normalizeProgrammingText(input.language).slice(0, 100),
+    license: normalizeProgrammingText(input.license).slice(0, 200),
+    stars,
+    topics
+  };
+}
+
+function githubSourceFields(snapshot) {
+  const github = snapshot?.github;
+  if (!github) return null;
+  return {
+    sourceType: 'github',
+    githubOwner: github.owner,
+    githubRepository: github.repository,
+    stars: github.stars
+  };
+}
+
+function sourceFieldsForProgrammingRecord(source, snapshot) {
+  const githubFields = githubSourceFields(snapshot);
+  if (githubFields) return githubFields;
+  return parseGitHubRepositoryUrl(source.normalizedUrl)
+    ? { sourceType: 'github', githubOwner: null, githubRepository: null, stars: null }
+    : { sourceType: 'manual', githubOwner: null, githubRepository: null, stars: null };
+}
+
+function validateProgrammingRecordSourceSnapshot(source, snapshot) {
+  if (!snapshot?.github) return;
+  const canonical = normalizeProgrammingRecordUrl(snapshot.canonicalUrl);
+  if (canonical.normalizedUrl !== source.normalizedUrl) throw new Error('GitHub 来源快照与记录地址不一致。');
+}
+
+function githubSourceTags(snapshot) {
+  const github = snapshot?.github;
+  return github ? [github.owner, github.language, ...github.topics].filter(Boolean) : [];
+}
+
 function normalizeProgrammingRecordSourceSnapshot(input) {
   if (input === null || input === undefined) return null;
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('来源快照无效。');
+  const canonicalUrl = normalizeProgrammingRecordSnapshotUrl(input.canonicalUrl);
   return {
     requestedUrl: normalizeProgrammingRecordSnapshotUrl(input.requestedUrl),
     finalUrl: normalizeProgrammingRecordSnapshotUrl(input.finalUrl),
-    canonicalUrl: normalizeProgrammingRecordSnapshotUrl(input.canonicalUrl),
+    canonicalUrl,
     title: normalizeProgrammingText(input.title).slice(0, 500),
     summary: normalizeProgrammingText(input.summary).slice(0, 4_000),
     author: normalizeProgrammingText(input.author).slice(0, 500),
     imageUrl: normalizeProgrammingRecordSnapshotUrl(input.imageUrl),
+    github: normalizeProgrammingRecordGitHubSnapshot(input.github, canonicalUrl),
     fetchedAt: input.fetchedAt ? asIso(input.fetchedAt) : null
   };
 }
@@ -262,6 +333,12 @@ function migrateContentCandidates(db) {
 function migrateProgrammingRecords(db) {
   const columns = db.prepare('PRAGMA table_info(programming_records)').all().map((column) => column.name);
   if (!columns.includes('source_snapshot')) db.exec('ALTER TABLE programming_records ADD COLUMN source_snapshot TEXT');
+}
+
+function migrateProgrammingRecordTags(db) {
+  const columns = db.prepare('PRAGMA table_info(programming_record_tag_links)').all().map((column) => column.name);
+  if (!columns.includes('is_user')) db.exec('ALTER TABLE programming_record_tag_links ADD COLUMN is_user INTEGER NOT NULL DEFAULT 1 CHECK(is_user IN (0, 1))');
+  if (!columns.includes('is_github')) db.exec('ALTER TABLE programming_record_tag_links ADD COLUMN is_github INTEGER NOT NULL DEFAULT 0 CHECK(is_github IN (0, 1))');
 }
 
 function migrateGenerationSchedules(db) {
@@ -578,6 +655,8 @@ function initializeSchema(db) {
     CREATE TABLE IF NOT EXISTS programming_record_tag_links (
       record_id TEXT NOT NULL REFERENCES programming_records(id) ON DELETE CASCADE,
       tag_id TEXT NOT NULL REFERENCES programming_tags(id),
+      is_user INTEGER NOT NULL DEFAULT 1 CHECK(is_user IN (0, 1)),
+      is_github INTEGER NOT NULL DEFAULT 0 CHECK(is_github IN (0, 1)),
       PRIMARY KEY(record_id, tag_id)
     );
     CREATE INDEX IF NOT EXISTS programming_record_tag_links_tag
@@ -589,6 +668,7 @@ function initializeSchema(db) {
   migrateStockEntryPlans(db);
   migrateContentCandidates(db);
   migrateProgrammingRecords(db);
+  migrateProgrammingRecordTags(db);
   seedStockSymbols(db);
   seedProgrammingRecordCategories(db);
 }
@@ -609,6 +689,9 @@ function createContentHub(options = {}) {
     hostnameResolver: options.hostnameResolver,
     webFetcher: options.webFetcher,
     now
+  });
+  const captureGitHubRepository = createGitHubRepositoryCapture({
+    repositoryFetcher: options.githubRepositoryFetcher
   });
   fs.mkdirSync(dataDirectory, { recursive: true });
   const databasePath = path.join(dataDirectory, 'x-assistant.sqlite');
@@ -733,6 +816,16 @@ function createContentHub(options = {}) {
     return tags;
   }
 
+  function mergeProgrammingRecordTags(userTags, sourceSnapshot) {
+    const tags = new Map();
+    for (const tag of userTags) tags.set(tag.normalizedName, { ...tag, isUser: true, isGithub: false });
+    for (const tag of normalizeProgrammingRecordTags(githubSourceTags(sourceSnapshot))) {
+      const current = tags.get(tag.normalizedName);
+      tags.set(tag.normalizedName, { ...tag, isUser: Boolean(current?.isUser), isGithub: true });
+    }
+    return [...tags.values()];
+  }
+
   function replaceProgrammingRecordCategories(recordId, categoryIds) {
     db.prepare('DELETE FROM programming_record_category_links WHERE record_id = ?').run(recordId);
     const linkCategory = db.prepare('INSERT INTO programming_record_category_links(record_id, category_id) VALUES (?, ?)');
@@ -744,10 +837,11 @@ function createContentHub(options = {}) {
     const insertTag = db.prepare(`INSERT OR IGNORE INTO programming_tags(id, name, normalized_name, created_at)
       VALUES (?, ?, ?, ?)`);
     const findTag = db.prepare('SELECT id FROM programming_tags WHERE normalized_name = ?');
-    const linkTag = db.prepare('INSERT INTO programming_record_tag_links(record_id, tag_id) VALUES (?, ?)');
+    const linkTag = db.prepare(`INSERT INTO programming_record_tag_links(record_id, tag_id, is_user, is_github)
+      VALUES (?, ?, ?, ?)`);
     for (const tag of tags) {
       insertTag.run(createId(), tag.name, tag.normalizedName, timestamp);
-      linkTag.run(recordId, findTag.get(tag.normalizedName).id);
+      linkTag.run(recordId, findTag.get(tag.normalizedName).id, Number(tag.isUser), Number(tag.isGithub));
     }
   }
 
@@ -759,15 +853,24 @@ function createContentHub(options = {}) {
       ORDER BY c.sort_order, c.name COLLATE NOCASE`).all(recordId).map(mapProgrammingRecordCategory);
   }
 
-  function programmingRecordTagsFor(recordId) {
-    return db.prepare(`SELECT tag.name
+  function programmingRecordTagLinksFor(recordId) {
+    return db.prepare(`SELECT tag.name, link.is_user, link.is_github
       FROM programming_record_tag_links link
       JOIN programming_tags tag ON tag.id = link.tag_id
       WHERE link.record_id = ?
-      ORDER BY tag.name COLLATE NOCASE`).all(recordId).map((tag) => tag.name);
+      ORDER BY tag.name COLLATE NOCASE`).all(recordId).map((tag) => ({
+      name: tag.name,
+      isUser: Boolean(tag.is_user),
+      isGithub: Boolean(tag.is_github)
+    }));
+  }
+
+  function programmingRecordUserTagsFor(recordId) {
+    return programmingRecordTagLinksFor(recordId).filter((tag) => tag.isUser).map((tag) => tag.name);
   }
 
   function mapProgrammingRecord(row) {
+    const tagLinks = programmingRecordTagLinksFor(row.id);
     return {
       id: row.id,
       url: row.url,
@@ -785,7 +888,8 @@ function createContentHub(options = {}) {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       categories: programmingRecordCategoriesFor(row.id),
-      tags: programmingRecordTagsFor(row.id)
+      tags: tagLinks.map((tag) => tag.name),
+      userTags: tagLinks.filter((tag) => tag.isUser).map((tag) => tag.name)
     };
   }
 
@@ -851,8 +955,10 @@ function createContentHub(options = {}) {
     const summary = normalizeProgrammingText(input.summary);
     const notes = normalizeProgrammingText(input.notes);
     const categoryIds = normalizeProgrammingRecordCategoryIds(input.categoryIds);
-    const tags = normalizeProgrammingRecordTags(input.tags);
     const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot);
+    validateProgrammingRecordSourceSnapshot(source, sourceSnapshot);
+    const sourceFields = sourceFieldsForProgrammingRecord(source, sourceSnapshot);
+    const tags = mergeProgrammingRecordTags(normalizeProgrammingRecordTags(input.tags), sourceSnapshot);
     const existingRecord = findProgrammingRecordByNormalizedUrl(source.normalizedUrl);
     if (existingRecord) return { existingRecord };
     const timestamp = asIso(undefined, now());
@@ -862,7 +968,7 @@ function createContentHub(options = {}) {
       title,
       summary,
       notes,
-      sourceType: 'manual',
+      ...sourceFields,
       sourceSnapshot,
       status: 'active',
       archivedAt: null,
@@ -873,8 +979,8 @@ function createContentHub(options = {}) {
       db.prepare(`INSERT INTO programming_records(
         id, url, normalized_url, title, summary, notes, source_type, github_owner, github_repository,
         source_stars, source_snapshot, status, archived_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`)
-        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.sourceSnapshot ? JSON.stringify(record.sourceSnapshot) : null, record.status, record.archivedAt, record.createdAt, record.updatedAt);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.githubOwner, record.githubRepository, record.stars, record.sourceSnapshot ? JSON.stringify(record.sourceSnapshot) : null, record.status, record.archivedAt, record.createdAt, record.updatedAt);
       replaceProgrammingRecordCategories(record.id, categoryIds);
       replaceProgrammingRecordTags(record.id, tags, timestamp);
     });
@@ -906,10 +1012,22 @@ function createContentHub(options = {}) {
     const categoryIds = input.categoryIds === undefined
       ? null
       : normalizeProgrammingRecordCategoryIds(input.categoryIds, currentCategoryIds);
-    const tags = input.tags === undefined ? null : normalizeProgrammingRecordTags(input.tags);
-    const sourceSnapshot = input.sourceSnapshot === undefined
-      ? existing.source_snapshot
-      : normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot);
+    const sourceSnapshotProvided = input.sourceSnapshot !== undefined;
+    const sourceChanged = source.normalizedUrl !== existing.normalized_url;
+    const sourceSnapshot = sourceSnapshotProvided
+      ? normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot)
+      : sourceChanged ? null : existing.source_snapshot;
+    const sourceSnapshotValue = typeof sourceSnapshot === 'string'
+      ? parseJson(sourceSnapshot, null)
+      : sourceSnapshot;
+    validateProgrammingRecordSourceSnapshot(source, sourceSnapshotValue);
+    const sourceFields = sourceFieldsForProgrammingRecord(source, sourceSnapshotValue);
+    const tags = input.tags === undefined && !sourceSnapshotProvided && !sourceChanged
+      ? null
+      : mergeProgrammingRecordTags(
+        normalizeProgrammingRecordTags(input.tags === undefined ? programmingRecordUserTagsFor(id) : input.tags),
+        sourceSnapshotValue
+      );
     const serializedSourceSnapshot = typeof sourceSnapshot === 'string'
       ? sourceSnapshot
       : sourceSnapshot ? JSON.stringify(sourceSnapshot) : null;
@@ -919,8 +1037,11 @@ function createContentHub(options = {}) {
     const archivedAt = status === 'archived' ? existing.archived_at || updatedAt : null;
     const save = db.transaction(() => {
       db.prepare(`UPDATE programming_records
-        SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, source_snapshot = ?, status = ?, archived_at = ?, updated_at = ?
-        WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, serializedSourceSnapshot, status, archivedAt, updatedAt, id);
+        SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, source_type = ?, github_owner = ?,
+          github_repository = ?, source_stars = ?, source_snapshot = ?, status = ?, archived_at = ?, updated_at = ?
+        WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, sourceFields.sourceType,
+        sourceFields.githubOwner, sourceFields.githubRepository, sourceFields.stars, serializedSourceSnapshot,
+        status, archivedAt, updatedAt, id);
       if (categoryIds !== null) replaceProgrammingRecordCategories(id, categoryIds);
       if (tags !== null) replaceProgrammingRecordTags(id, tags, updatedAt);
     });
@@ -935,6 +1056,47 @@ function createContentHub(options = {}) {
     if (recordId && !currentRecord) throw new Error('编程记录不存在。');
     const existingRecord = findProgrammingRecordByNormalizedUrl(requested.normalizedUrl);
     if (existingRecord && existingRecord.id !== currentRecord?.id) return { existingRecord };
+
+    let githubFallback = false;
+    if (parseGitHubRepositoryUrl(requested.normalizedUrl)) {
+      try {
+        const githubCapture = await captureGitHubRepository(requested.normalizedUrl);
+        const canonical = normalizeProgrammingRecordUrl(githubCapture.canonicalUrl);
+        const canonicalExistingRecord = findProgrammingRecordByNormalizedUrl(canonical.normalizedUrl);
+        if (canonicalExistingRecord && canonicalExistingRecord.id !== currentRecord?.id) return { existingRecord: canonicalExistingRecord };
+        const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot({
+          requestedUrl: requested.normalizedUrl,
+          finalUrl: githubCapture.canonicalUrl,
+          canonicalUrl: canonical.normalizedUrl,
+          title: githubCapture.title,
+          summary: githubCapture.summary,
+          author: githubCapture.author,
+          imageUrl: githubCapture.imageUrl,
+          github: githubCapture.github,
+          fetchedAt: asIso(undefined, now())
+        });
+        const missingFields = [
+          !sourceSnapshot.title && '标题',
+          !sourceSnapshot.summary && '摘要',
+          !sourceSnapshot.author && '作者',
+          !sourceSnapshot.imageUrl && '来源图片'
+        ].filter(Boolean);
+        return {
+          capture: {
+            url: canonical.normalizedUrl,
+            normalizedUrl: canonical.normalizedUrl,
+            title: sourceSnapshot.title,
+            summary: sourceSnapshot.summary,
+            author: sourceSnapshot.author,
+            imageUrl: sourceSnapshot.imageUrl,
+            missingFields,
+            sourceSnapshot
+          }
+        };
+      } catch {
+        githubFallback = true;
+      }
+    }
 
     const captured = await capturePublicWebPage(requested.normalizedUrl);
     const canonical = normalizeProgrammingRecordUrl(captured.canonicalUrl || captured.finalUrl || requested.normalizedUrl);
@@ -960,6 +1122,7 @@ function createContentHub(options = {}) {
         author: sourceSnapshot.author,
         imageUrl: sourceSnapshot.imageUrl,
         missingFields: captured.missingFields,
+        githubFallback,
         sourceSnapshot
       }
     };

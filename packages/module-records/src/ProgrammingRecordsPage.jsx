@@ -41,6 +41,24 @@ function parseTags(value) {
   return value.split(/[、,，\n]/).map((tag) => tag.trim()).filter(Boolean);
 }
 
+
+function sourceTypeLabel(sourceType) {
+  return sourceType === 'github' ? 'GitHub 仓库' : '手动维护';
+}
+
+function GitHubSnapshotFields({ github }) {
+  if (!github) return null;
+  return (
+    <>
+      <div className="min-w-0"><dt className="text-xs text-foreground-muted">GitHub 仓库</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{github.owner}/{github.repository}</dd></div>
+      {github.language && <div className="min-w-0"><dt className="text-xs text-foreground-muted">主要语言</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{github.language}</dd></div>}
+      {github.license && <div className="min-w-0"><dt className="text-xs text-foreground-muted">许可证</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{github.license}</dd></div>}
+      {github.stars !== null && github.stars !== undefined && <div className="min-w-0"><dt className="text-xs text-foreground-muted">Stars</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{github.stars.toLocaleString('zh-CN')}</dd></div>}
+      {github.topics?.length > 0 && <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-foreground-muted">Topics</dt><dd className="m-0 mt-1 flex min-w-0 flex-wrap gap-1.5">{github.topics.map((topic) => <Badge key={topic} className="max-w-full break-all whitespace-normal" variant="soft" size="sm">{topic}</Badge>)}</dd></div>}
+    </>
+  );
+}
+
 function captureUrlValidationError(value) {
   const source = value.trim();
   if (!source) return '请输入公开 URL。';
@@ -63,7 +81,7 @@ function recordInputFrom(record) {
     title: record.title,
     summary: record.summary,
     categoryIds: record.categories.map((category) => category.id),
-    tagsText: record.tags.join('、'),
+    tagsText: (record.userTags || record.tags).join('、'),
     notes: record.notes,
     sourceSnapshot: record.sourceSnapshot || null
   };
@@ -99,12 +117,16 @@ function RecordEditor({ categories, value, onChange, error, captureLoading, capt
       {snapshot && (
         <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background-subtle p-3">
           <div>
-            <p className="m-0 text-sm font-medium text-foreground-strong">{captureNotice ? '新来源快照待确认保存' : '已确认来源快照'}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="m-0 text-sm font-medium text-foreground-strong">{captureNotice ? '新来源快照待确认保存' : '已确认来源快照'}</p>
+              {snapshot.github && <Badge variant="outline" size="sm">GitHub 仓库</Badge>}
+            </div>
             <p className="m-0 mt-1 text-xs text-foreground-muted">只保留结构化元数据，不保存网页正文或图片。</p>
           </div>
           <dl className="grid gap-2 text-sm sm:grid-cols-2">
             <div className="min-w-0"><dt className="text-xs text-foreground-muted">规范化地址</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{snapshot.canonicalUrl || value.url}</dd></div>
             <div><dt className="text-xs text-foreground-muted">抓取时间</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{formatDateTime(snapshot.fetchedAt)}</dd></div>
+            <GitHubSnapshotFields github={snapshot.github} />
             {snapshot.author && <div><dt className="text-xs text-foreground-muted">作者</dt><dd className="m-0 mt-1 text-foreground-strong">{snapshot.author}</dd></div>}
             {snapshot.title && <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源标题</dt><dd className="m-0 mt-1 wrap-break-word text-foreground-strong">{snapshot.title}</dd></div>}
             {snapshot.summary && <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-foreground-muted">来源摘要</dt><dd className="m-0 mt-1 whitespace-pre-wrap wrap-break-word text-foreground-strong">{snapshot.summary}</dd></div>}
@@ -137,7 +159,7 @@ function RecordEditor({ categories, value, onChange, error, captureLoading, capt
       <Field>
         <FieldLabel>标签</FieldLabel>
         <Input value={value.tagsText} onChange={(event) => onChange({ ...value, tagsText: event.target.value })} placeholder="例如：CLI、React、组件库" />
-        <FieldDescription>用顿号、逗号或换行分隔；标签用于检索，不替代分类。</FieldDescription>
+        <FieldDescription>用顿号、逗号或换行分隔；GitHub owner、语言和 topics 会作为来源标签在确认保存时写入。</FieldDescription>
       </Field>
       <Field>
         <FieldLabel>备注</FieldLabel>
@@ -185,6 +207,7 @@ function RecordCards({ records, onView, onEdit, onStatusChange, onDelete }) {
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="min-w-0 flex-1 text-base font-semibold text-foreground-intense wrap-break-word">{record.title}</h2>
               <Badge variant={record.status === 'archived' ? 'secondary' : 'success'} size="sm">{record.status === 'archived' ? '已归档' : '有效'}</Badge>
+              {record.sourceType === 'github' && <Badge variant="outline" size="sm">GitHub</Badge>}
             </div>
             {record.summary && <p className="text-sm leading-6 text-foreground-muted wrap-break-word">{record.summary}</p>}
             <a href={record.url} target="_blank" rel="noreferrer" className="text-sm text-primary underline underline-offset-2 wrap-break-word">{record.url}</a>
@@ -220,7 +243,7 @@ function RecordDetails({ open, record, loading, error, onClose }) {
               <>
                 <dl className="grid gap-3 rounded-[var(--radius-md)] border border-border p-4 sm:grid-cols-2">
                   <div className="min-w-0"><dt className="text-xs text-foreground-muted">状态</dt><dd className="m-0 mt-1"><Badge variant={record.status === 'archived' ? 'secondary' : 'success'} size="sm">{record.status === 'archived' ? '已归档' : '有效'}</Badge></dd></div>
-                  <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源</dt><dd className="m-0 mt-1 text-sm text-foreground-strong">{record.sourceType === 'manual' ? '手动维护' : record.sourceType}</dd></div>
+                  <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源</dt><dd className="m-0 mt-1 text-sm text-foreground-strong">{sourceTypeLabel(record.sourceType)}</dd></div>
                   <div className="min-w-0"><dt className="text-xs text-foreground-muted">创建时间</dt><dd className="m-0 mt-1 text-sm tabular-nums text-foreground-strong">{formatDateTime(record.createdAt)}</dd></div>
                   <div className="min-w-0"><dt className="text-xs text-foreground-muted">最近更新</dt><dd className="m-0 mt-1 text-sm tabular-nums text-foreground-strong">{formatDateTime(record.updatedAt)}</dd></div>
                 </dl>
@@ -234,10 +257,14 @@ function RecordDetails({ open, record, loading, error, onClose }) {
                 </div>
                 {record.sourceSnapshot && (
                   <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background-subtle p-3">
-                    <h3 className="m-0 text-sm font-medium text-foreground-strong">已确认来源快照</h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="m-0 text-sm font-medium text-foreground-strong">已确认来源快照</h3>
+                      {record.sourceSnapshot.github && <Badge variant="outline" size="sm">GitHub 仓库</Badge>}
+                    </div>
                     <dl className="grid gap-2 text-sm sm:grid-cols-2">
                       <div className="min-w-0"><dt className="text-xs text-foreground-muted">规范化地址</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{record.sourceSnapshot.canonicalUrl || '未提供'}</dd></div>
                       <div><dt className="text-xs text-foreground-muted">抓取时间</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{formatDateTime(record.sourceSnapshot.fetchedAt)}</dd></div>
+                      <GitHubSnapshotFields github={record.sourceSnapshot.github} />
                       {record.sourceSnapshot.author && <div><dt className="text-xs text-foreground-muted">作者</dt><dd className="m-0 mt-1 text-foreground-strong">{record.sourceSnapshot.author}</dd></div>}
                       {record.sourceSnapshot.imageUrl && <div className="min-w-0"><dt className="text-xs text-foreground-muted">来源图片链接</dt><dd className="m-0 mt-1 break-all text-foreground-strong">{record.sourceSnapshot.imageUrl}</dd></div>}
                     </dl>
@@ -563,7 +590,11 @@ function ProgrammingRecordsPage() {
       if (!capture) throw new Error('采集结果无效。');
       setRecordInput((current) => {
         if (current.url !== requestedUrl) return current;
-        if (recordId) return { ...current, sourceSnapshot: capture.sourceSnapshot };
+        if (recordId) return {
+          ...current,
+          url: capture.url,
+          sourceSnapshot: capture.sourceSnapshot
+        };
         return {
           ...current,
           url: capture.url,
@@ -574,9 +605,11 @@ function ProgrammingRecordsPage() {
       });
       const missingFields = Array.isArray(capture.missingFields) ? capture.missingFields : [];
       const missingNotice = missingFields.length ? `未找到${missingFields.join('、')}，请手动补全；` : '';
+      const fallbackNotice = capture.githubFallback ? 'GitHub 公开 API 未返回完整资料，已改用网页元数据；' : '';
+      const sourceLabel = capture.sourceSnapshot?.github ? 'GitHub 仓库资料' : '可用元数据';
       setCaptureNotice(recordId
-        ? `${missingNotice}已取得新的来源快照；标题、摘要、备注和分类保持不变，点击保存修改后才会更新快照。`
-        : `${missingNotice}已将可用元数据填入表单；你可以继续修改，点击保存记录后才会写入本地。`);
+        ? `${fallbackNotice}${missingNotice}已取得新的${sourceLabel}来源快照；标题、摘要、备注、人工标签和分类保持不变，GitHub 来源标签会在保存后按最新资料更新。`
+        : `${fallbackNotice}${missingNotice}已将${sourceLabel}填入表单；GitHub owner、语言和 topics 会在确认保存时作为来源标签写入。`);
     } catch (requestError) {
       if (!mountedRef.current || requestId !== captureRequestRef.current) return;
       const existing = requestError.payload?.existingRecord;
@@ -698,7 +731,7 @@ function ProgrammingRecordsPage() {
                   {records.map((record) => (
                     <TableRow key={record.id}>
                       <TableCell className="min-w-84 max-w-120 align-top">
-                        <div className="font-medium text-foreground-intense wrap-break-word">{record.title}</div>
+                        <div className="flex flex-wrap items-center gap-2"><div className="font-medium text-foreground-intense wrap-break-word">{record.title}</div>{record.sourceType === 'github' && <Badge variant="outline" size="sm">GitHub</Badge>}</div>
                         {record.summary && <div className="mt-1 text-sm leading-6 text-foreground-muted wrap-break-word">{record.summary}</div>}
                         <a href={record.url} target="_blank" rel="noreferrer" className="mt-1 block text-xs text-primary underline underline-offset-2 wrap-break-word">{record.url}</a>
                       </TableCell>

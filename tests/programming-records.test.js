@@ -443,3 +443,227 @@ test('公开采集以绝对期限停止，并允许公开 IPv4-mapped IPv6', asy
   assert.equal(capture.title, '公开映射地址');
   assert.equal(publicIpv6Requests, 1);
 });
+
+test('GitHub 仓库采集预填真实资料、映射标签并在确认后更新来源字段', async () => {
+  const repositoryCalls = [];
+  await withHub(async ({ baseUrl }) => {
+    const categories = (await request(baseUrl, '/v1/programming-records/categories')).payload.categories;
+    const tools = categories.find((category) => category.name === '工具');
+    const frontend = categories.find((category) => category.name === '前端');
+    const capture = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://www.github.com/Acme/Toolkit.git/tree/main?utm_source=feed' })
+    });
+    assert.equal(capture.response.status, 200);
+    assert.equal(capture.payload.capture.url, 'https://github.com/acme/toolkit');
+    assert.equal(capture.payload.capture.title, 'Acme/Toolkit');
+    assert.equal(capture.payload.capture.summary, '用于维护工程工具。');
+    assert.deepEqual(capture.payload.capture.missingFields, []);
+    assert.deepEqual(repositoryCalls.map(({ owner, repository }) => ({ owner, repository })), [{ owner: 'acme', repository: 'toolkit' }]);
+    assert.deepEqual(capture.payload.capture.sourceSnapshot.github, {
+      owner: 'Acme',
+      repository: 'Toolkit',
+      language: 'TypeScript',
+      license: 'MIT License',
+      stars: 42,
+      topics: ['cli', 'tooling']
+    });
+
+    const mismatched = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: 'https://example.com/not-a-github-repository',
+        title: '错误来源',
+        sourceSnapshot: capture.payload.capture.sourceSnapshot
+      })
+    });
+    assert.equal(mismatched.response.status, 400);
+    assert.match(mismatched.payload.error, /GitHub 来源快照与记录地址不一致/);
+    assert.equal((await request(baseUrl, '/v1/programming-records')).payload.total, 0);
+
+    const saved = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: capture.payload.capture.url,
+        title: '人工确认的 Toolkit',
+        summary: '人工维护摘要',
+        notes: '人工维护备注',
+        categoryIds: [frontend.id, tools.id],
+        tags: ['手工标签', 'TypeScript'],
+        sourceSnapshot: capture.payload.capture.sourceSnapshot
+      })
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.record.sourceType, 'github');
+    assert.equal(saved.payload.record.githubOwner, 'Acme');
+    assert.equal(saved.payload.record.githubRepository, 'Toolkit');
+    assert.equal(saved.payload.record.stars, 42);
+    assert.deepEqual([...saved.payload.record.tags].sort(), ['Acme', 'TypeScript', 'cli', 'tooling', '手工标签'].sort());
+    assert.deepEqual([...saved.payload.record.userTags].sort(), ['TypeScript', '手工标签'].sort());
+    assert.deepEqual(saved.payload.record.categories.map((category) => category.name), ['工具', '前端']);
+    assert.equal((await request(baseUrl, '/v1/programming-records?query=Acme')).payload.total, 1);
+
+    const duplicate = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://GITHUB.com/acme/toolkit/' })
+    });
+    assert.equal(duplicate.response.status, 409);
+    assert.equal(repositoryCalls.length, 1);
+
+    const recaptured = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: saved.payload.record.url, recordId: saved.payload.record.id })
+    });
+    assert.equal(recaptured.response.status, 200);
+    assert.equal(recaptured.payload.capture.url, 'https://github.com/acme/renamed-toolkit');
+    assert.equal(recaptured.payload.capture.sourceSnapshot.github.repository, 'Renamed-Toolkit');
+    assert.equal(recaptured.payload.capture.sourceSnapshot.github.language, 'Rust');
+    assert.equal((await request(baseUrl, `/v1/programming-records/${saved.payload.record.id}`)).payload.record.title, '人工确认的 Toolkit');
+
+    const confirmed = await request(baseUrl, `/v1/programming-records/${saved.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ url: recaptured.payload.capture.url, sourceSnapshot: recaptured.payload.capture.sourceSnapshot })
+    });
+    assert.equal(confirmed.response.status, 200);
+    assert.equal(confirmed.payload.record.normalizedUrl, 'https://github.com/acme/renamed-toolkit');
+    assert.equal(confirmed.payload.record.githubRepository, 'Renamed-Toolkit');
+    assert.equal(confirmed.payload.record.title, '人工确认的 Toolkit');
+    assert.equal(confirmed.payload.record.summary, '人工维护摘要');
+    assert.equal(confirmed.payload.record.notes, '人工维护备注');
+    assert.deepEqual(confirmed.payload.record.categories.map((category) => category.name), ['工具', '前端']);
+    assert.ok(confirmed.payload.record.tags.includes('手工标签'));
+    assert.ok(confirmed.payload.record.tags.includes('TypeScript'));
+    assert.ok(confirmed.payload.record.tags.includes('Rust'));
+    assert.ok(confirmed.payload.record.tags.includes('fast'));
+    assert.ok(!confirmed.payload.record.tags.includes('cli'));
+    assert.deepEqual([...confirmed.payload.record.userTags].sort(), ['TypeScript', '手工标签'].sort());
+    assert.equal(confirmed.payload.record.sourceSnapshot.github.stars, 99);
+
+    const urlOnlyChanged = await request(baseUrl, `/v1/programming-records/${saved.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ url: 'https://github.com/acme/url-only-change' })
+    });
+    assert.equal(urlOnlyChanged.response.status, 200);
+    assert.equal(urlOnlyChanged.payload.record.normalizedUrl, 'https://github.com/acme/url-only-change');
+    assert.equal(urlOnlyChanged.payload.record.sourceSnapshot, null);
+    assert.equal(urlOnlyChanged.payload.record.githubOwner, null);
+    assert.equal(urlOnlyChanged.payload.record.githubRepository, null);
+    assert.equal(urlOnlyChanged.payload.record.stars, null);
+    assert.deepEqual([...urlOnlyChanged.payload.record.tags].sort(), ['TypeScript', '手工标签'].sort());
+
+    const fallbackRecapture = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: urlOnlyChanged.payload.record.url, recordId: urlOnlyChanged.payload.record.id })
+    });
+    assert.equal(fallbackRecapture.response.status, 200);
+    assert.equal(fallbackRecapture.payload.capture.githubFallback, true);
+    assert.equal(fallbackRecapture.payload.capture.sourceSnapshot.github, null);
+
+    const fallbackConfirmed = await request(baseUrl, `/v1/programming-records/${saved.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ url: fallbackRecapture.payload.capture.url, sourceSnapshot: fallbackRecapture.payload.capture.sourceSnapshot })
+    });
+    assert.equal(fallbackConfirmed.response.status, 200);
+    assert.equal(fallbackConfirmed.payload.record.sourceType, 'github');
+    assert.equal(fallbackConfirmed.payload.record.githubOwner, null);
+    assert.equal(fallbackConfirmed.payload.record.githubRepository, null);
+    assert.equal(fallbackConfirmed.payload.record.stars, null);
+    assert.deepEqual([...fallbackConfirmed.payload.record.tags].sort(), ['TypeScript', '手工标签'].sort());
+  }, {
+    githubRepositoryFetcher: async (repository) => {
+      repositoryCalls.push(repository);
+      if (repositoryCalls.length === 1) {
+        return {
+          owner: { login: 'Acme', avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4' },
+          name: 'Toolkit',
+          html_url: 'https://github.com/Acme/Toolkit',
+          description: '用于维护工程工具。',
+          language: 'TypeScript',
+          license: { name: 'MIT License' },
+          stargazers_count: 42,
+          topics: ['cli', 'tooling']
+        };
+      }
+      if (repositoryCalls.length === 2) {
+        return {
+          owner: { login: 'Acme', avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4' },
+          name: 'Renamed-Toolkit',
+          html_url: 'https://github.com/Acme/Renamed-Toolkit',
+          description: '用于维护工程工具的新资料。',
+          language: 'Rust',
+          license: { name: 'MIT License' },
+          stargazers_count: 99,
+          topics: ['tooling', 'fast']
+        };
+      }
+      throw new Error('GitHub API 限流。');
+    },
+    hostnameResolver: async () => [{ address: '140.82.112.3', family: 4 }],
+    webFetcher: async () => ({
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      body: '<html><head><title>GitHub 网页兜底标题</title><meta name="description" content="GitHub 网页兜底摘要"></head></html>'
+    })
+  });
+});
+
+test('GitHub 公开 API 不可用或资料不完整时安全降级网页 metadata', async () => {
+  const genericRequests = [];
+  await withHub(async ({ baseUrl }) => {
+    const unavailable = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://github.com/acme/unavailable' })
+    });
+    assert.equal(unavailable.response.status, 200);
+    assert.equal(unavailable.payload.capture.githubFallback, true);
+    assert.equal(unavailable.payload.capture.title, '网页兜底标题');
+    assert.equal(unavailable.payload.capture.sourceSnapshot.github, null);
+
+    const saved = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: unavailable.payload.capture.url,
+        title: '人工补全 GitHub 页面',
+        tags: ['手工标签'],
+        sourceSnapshot: unavailable.payload.capture.sourceSnapshot
+      })
+    });
+    assert.equal(saved.response.status, 201);
+    assert.equal(saved.payload.record.sourceType, 'github');
+    assert.equal(saved.payload.record.githubOwner, null);
+    assert.deepEqual(saved.payload.record.tags, ['手工标签']);
+
+    const incomplete = await request(baseUrl, '/v1/programming-records/capture', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://github.com/acme/incomplete' })
+    });
+    assert.equal(incomplete.response.status, 200);
+    assert.equal(incomplete.payload.capture.githubFallback, true);
+    assert.equal(incomplete.payload.capture.sourceSnapshot.github, null);
+    assert.deepEqual(genericRequests, [
+      'https://github.com/acme/unavailable',
+      'https://github.com/acme/incomplete'
+    ]);
+  }, {
+    hostnameResolver: async () => [{ address: '140.82.112.3', family: 4 }],
+    githubRepositoryFetcher: async (repository) => {
+      if (repository.repository === 'unavailable') throw new Error('GitHub API 限流。');
+      return {
+        owner: { login: 'Acme' },
+        name: 'Incomplete',
+        html_url: 'https://github.com/Acme/Incomplete',
+        description: '缺少 GitHub 必填资料。',
+        language: 'TypeScript',
+        license: { name: 'MIT License' }
+      };
+    },
+    webFetcher: async (url) => {
+      genericRequests.push(url.toString());
+      return {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+        body: '<html><head><title>网页兜底标题</title><meta name="description" content="网页兜底摘要"></head></html>'
+      };
+    }
+  });
+});

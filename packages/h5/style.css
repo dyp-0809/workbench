@@ -8,9 +8,9 @@ body { margin: 0; }
 h1 { margin: 2px 0 0; font-size: 25px; letter-spacing: -.03em; }
 h2 { margin: 0; font-size: 19px; }
 .notice { display: grid; gap: 2px; margin-bottom: 14px; padding: 12px 14px; border-radius: 12px; color: #155d3b; background: #effbf5; font-size: 14px; }
-.tabs { justify-content: flex-start; border-bottom: 1px solid #dce6ef; margin-bottom: 14px; }
+.tabs { justify-content: flex-start; overflow-x: auto; border-bottom: 1px solid #dce6ef; margin-bottom: 14px; scrollbar-width: thin; overscroll-behavior-inline: contain; }
 .tab-button, .text-button, .copy-button { border: 0; background: transparent; color: #536471; cursor: pointer; font: inherit; }
-.tab-button { min-height: 44px; padding: 10px 4px; margin-right: 14px; border-bottom: 2px solid transparent; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.tab-button { flex: 0 0 auto; min-height: 44px; padding: 10px 4px; margin-right: 14px; border-bottom: 2px solid transparent; touch-action: pan-x; -webkit-tap-highlight-color: transparent; white-space: nowrap; }
 .tab-button.active { color: #0f1419; border-bottom-color: #0f1419; font-weight: 700; }
 .tab-count { display: inline-grid; min-width: 20px; min-height: 20px; place-items: center; margin-left: 3px; padding: 0 5px; border-radius: 99px; color: #536471; background: #eef3f7; font-size: 11px; font-variant-numeric: tabular-nums; }
 .tab-button.active .tab-count { color: #fff; background: #536471; }

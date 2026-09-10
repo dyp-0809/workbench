@@ -12,6 +12,8 @@ h2 { margin: 0; font-size: 19px; }
 .tab-button, .text-button, .copy-button { border: 0; background: transparent; color: #536471; cursor: pointer; font: inherit; }
 .tab-button { min-height: 44px; padding: 10px 4px; margin-right: 14px; border-bottom: 2px solid transparent; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .tab-button.active { color: #0f1419; border-bottom-color: #0f1419; font-weight: 700; }
+.tab-count { display: inline-grid; min-width: 20px; min-height: 20px; place-items: center; margin-left: 3px; padding: 0 5px; border-radius: 99px; color: #536471; background: #eef3f7; font-size: 11px; font-variant-numeric: tabular-nums; }
+.tab-button.active .tab-count { color: #fff; background: #536471; }
 .text-button { padding: 7px 4px; color: #536471; }
 .floating-quick-reply-button {
   position: fixed;
@@ -121,6 +123,18 @@ label { display: block; color: #536471; font-size: 13px; font-weight: 650; }
 .reply-draft[data-draft-index="2"] { border-left-color: #16a085; background: #f2fbf8; }
 .reply-draft[data-draft-index="3"] { border-left-color: #e39b2f; background: #fffaf0; }
 .draft-label { color: #536471; font-size: 13px; font-weight: 800; letter-spacing: .04em; }
+.history-empty { padding: 16px 0 4px; color: #536471; font-size: 14px; }
+.tweet-history-list { display: grid; gap: 14px; }
+.tweet-history-group { display: grid; gap: 8px; }
+.tweet-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #17202a; font-size: 14px; font-weight: 800; }
+.tweet-history-heading time { font-variant-numeric: tabular-nums; }
+.tweet-history-items { display: grid; gap: 7px; }
+.tweet-history-item { width: 100%; padding: 11px 12px; border: 1px solid #e1e8ef; border-radius: 10px; color: #17202a; background: #fff; cursor: pointer; font: inherit; line-height: 1.55; text-align: left; white-space: pre-wrap; }
+.tweet-history-item:hover, .tweet-history-item:focus-visible { border-color: #73bff0; box-shadow: 0 0 0 3px rgba(115, 191, 240, .16); outline: none; }
+.history-source { margin: 12px 0; padding: 11px 12px; border-radius: 10px; color: #17202a; background: #f4f7fb; white-space: pre-wrap; }
+.history-rewrite-result { margin-top: 14px; }
+.history-rewrite-result .draft-item { font-size: 18px; line-height: 1.7; }
+.history-rewrite-result .copy-button { margin-top: 3px; }
 .draft-item > div { color: #536471; font-size: 14px; }
 .draft-item strong { color: #17202a; }
 .copy-button { justify-self: start; padding: 5px 0; color: #1677b7; font-size: 14px; }

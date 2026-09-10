@@ -82,28 +82,30 @@ function StockStatsPage({ positions: externalPositions, loading: externalLoading
           <h3 className="text-sm font-semibold">持仓盈亏光谱</h3>
           <span className="text-[11px] text-foreground-muted">按盈亏幅度排序 · 线上盈利，线下亏损</span>
         </div>
-        <div className="relative flex h-56">
+        <div className="relative" style={{ height: '14rem', overflowX: 'auto' }}>
           <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-border" />
-          <span className="absolute right-0 top-1/2 -translate-y-1/2 bg-background pl-1 text-[10px] text-foreground-muted">0%</span>
-          {model.sorted.map((item) => {
-            const itemUp = item.pnl >= 0;
-            const height = Math.max(8, Math.min(Math.abs(item.pnlPercent) * 240, 88));
-            const barStyle = itemUp
-              ? { bottom: '50%', height: `${height}px`, background: 'var(--profit)' }
-              : { top: '50%', height: `${height}px`, background: 'var(--loss)' };
-            const tagStyle = itemUp
-              ? { bottom: `calc(50% + ${height + 24}px)` }
-              : { top: `calc(50% + ${height + 24}px)` };
-            return (
-              <div key={item.id} className="relative min-w-0 flex-1">
-                <div className="absolute inset-x-[24%] rounded-t-sm" style={barStyle} />
-                <span className="absolute inset-x-0 text-center text-[11px] font-bold leading-tight" style={{ ...tagStyle, color: itemUp ? 'var(--profit)' : 'var(--loss)' }}>
-                  {item.symbol}<br />
-                  <span className="font-semibold tabular-nums"><AnimatedSigned value={item.pnlPercent * 100} fractionDigits={1} suffix="%" /></span>
-                </span>
-              </div>
-            );
-          })}
+          <span className="absolute right-0 top-1/2 z-10 -translate-y-1/2 bg-background pl-1 text-[10px] text-foreground-muted">0%</span>
+          <div className="relative flex" style={{ height: '14rem', minWidth: `${Math.max(model.sorted.length * 5, 20)}rem` }}>
+            {model.sorted.map((item) => {
+              const itemUp = item.pnl >= 0;
+              const height = Math.max(8, Math.min(Math.abs(item.pnlPercent) * 240, 88));
+              const barStyle = itemUp
+                ? { left: '24%', right: '24%', bottom: '50%', height: `${height}px`, background: 'var(--profit)' }
+                : { left: '24%', right: '24%', top: '50%', height: `${height}px`, background: 'var(--loss)' };
+              const tagStyle = itemUp
+                ? { bottom: `calc(50% + ${height + 24}px)` }
+                : { top: `calc(50% + ${height + 24}px)` };
+              return (
+                <div key={item.id} className="relative min-w-0 flex-1">
+                  <div className="absolute" style={{ ...barStyle, borderTopLeftRadius: 'var(--radius-sm)', borderTopRightRadius: 'var(--radius-sm)' }} />
+                  <span className="absolute inset-x-0 text-center text-[11px] font-bold leading-tight" style={{ ...tagStyle, color: itemUp ? 'var(--profit)' : 'var(--loss)' }}>
+                    {item.symbol}<br />
+                    <span className="font-semibold tabular-nums"><AnimatedSigned value={item.pnlPercent * 100} fractionDigits={1} suffix="%" /></span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </section>
 

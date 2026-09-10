@@ -88,17 +88,22 @@ function FinnhubQuoteCard({ chart, quote }) {
         ) : (
           <>
             <MarketGauge quote={quote} />
-            <div className="grid grid-cols-2 gap-3 rounded-md border border-border bg-background-muted/20 p-4">
-              <div>
-                <div className="text-xs text-foreground-muted">最新价</div>
-                <div className="mt-1 flex items-center text-2xl font-semibold tabular-nums text-foreground-intense"><AnimatedMoney value={quote?.currentPrice} /></div>
+            <div className="grid gap-3 rounded-md border border-border bg-background-muted/20 p-4">
+              <div className="grid gap-x-4" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-foreground-muted">最新价</div>
+                  <div className="mt-1 flex items-center whitespace-nowrap text-2xl font-semibold tabular-nums text-foreground-intense"><AnimatedMoney value={quote?.currentPrice} /></div>
+                </div>
+                <div className="min-w-0 text-right">
+                  <div className="flex justify-end text-xs font-medium text-foreground-muted">开盘</div>
+                  <div className="mt-1 flex items-center justify-end whitespace-nowrap text-sm font-medium tabular-nums text-foreground-intense"><AnimatedMoney value={quote?.open} /></div>
+                </div>
               </div>
-              <div style={{ color: changePositive ? 'var(--profit)' : 'var(--loss)' }}>
-                <div className="text-xs text-foreground-muted">日内涨跌</div>
-                <div className="mt-1 flex items-center text-lg font-semibold tabular-nums"><AnimatedSigned value={quote?.change} /> <AnimatedSigned value={quote?.changePercent} suffix="%" /></div>
+              <div className="h-px bg-border" aria-hidden="true" />
+              <div className="flex items-baseline justify-between gap-4">
+                <div className="text-xs font-medium text-foreground-muted">日内涨跌幅</div>
+                <div className="flex items-center justify-end whitespace-nowrap text-lg font-semibold tabular-nums" style={{ color: changePositive ? 'var(--profit)' : 'var(--loss)' }}><AnimatedSigned value={quote?.changePercent} suffix="%" /></div>
               </div>
-              <div className="text-sm"><span className="text-foreground-muted">开盘</span><span className="ml-2 inline-flex items-center tabular-nums"><AnimatedMoney value={quote?.open} /></span></div>
-              <div className="text-sm"><span className="text-foreground-muted">区间</span><span className="ml-2 inline-flex items-center tabular-nums"><AnimatedMoney value={quote?.low} /> <span className="mx-1">—</span> <AnimatedMoney value={quote?.high} /></span></div>
             </div>
           </>
         )}

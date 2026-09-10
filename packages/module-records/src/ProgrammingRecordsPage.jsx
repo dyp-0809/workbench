@@ -13,14 +13,14 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from '@appica/ui-react/dialog';
 import { Pagination, PaginationList, PaginationItem, PaginationLink } from '@appica/ui-react/pagination';
 import { Archive, ArrowUpRight, ChevronLeft, ChevronRight, Pencil, Plus, Search, Trash } from '@appica/icons-react';
-import { api, Empty, LoadingButton, SectionCard } from '@personal-workbench/core';
+import { api, Empty, LoadingButton, PasswordInput, SectionCard } from '@personal-workbench/core';
 
 const PAGE_SIZE = 20;
 const STATUS_ITEMS = { active: '有效', archived: '已归档', all: '全部' };
 const SORT_ITEMS = { updatedAt: '最近更新', createdAt: '创建时间', title: '标题', stars: 'GitHub Stars' };
 
 function emptyRecordInput() {
-  return { url: '', title: '', summary: '', categoryIds: [], tagsText: '', notes: '', sourceSnapshot: null };
+  return { url: '', title: '', summary: '', categoryIds: [], tagsText: '', notes: '', sourceSnapshot: null, isDigested: false };
 }
 
 function formatDateTime(value) {
@@ -41,7 +41,10 @@ function parseTags(value) {
   return value.split(/[、,，\n]/).map((tag) => tag.trim()).filter(Boolean);
 }
 
-
+function githubSourceTags(snapshot) {
+  const github = snapshot?.github;
+  return github ? [github.owner, github.language, ...(Array.isArray(github.topics) ? github.topics : [])].filter(Boolean) : [];
+}
 function sourceTypeLabel(sourceType) {
   return sourceType === 'github' ? 'GitHub 仓库' : '手动维护';
 }
@@ -56,6 +59,275 @@ function GitHubSnapshotFields({ github }) {
       {github.stars !== null && github.stars !== undefined && <div className="min-w-0"><dt className="text-xs text-foreground-muted">Stars</dt><dd className="m-0 mt-1 tabular-nums text-foreground-strong">{github.stars.toLocaleString('zh-CN')}</dd></div>}
       {github.topics?.length > 0 && <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-foreground-muted">Topics</dt><dd className="m-0 mt-1 flex min-w-0 flex-wrap gap-1.5">{github.topics.map((topic) => <Badge key={topic} className="max-w-full break-all whitespace-normal" variant="soft" size="sm">{topic}</Badge>)}</dd></div>}
     </>
+  );
+}
+
+function toggleImportCategory(categoryIds, categoryId, checked) {
+  return checked ? [...new Set([...categoryIds, categoryId])] : categoryIds.filter((id) => id !== categoryId);
+}
+
+function updateImportItemNotes(items, normalizedUrl, notes) {
+  return items.map((item) => item.normalizedUrl === normalizedUrl ? { ...item, notes } : item);
+}
+
+function ImportMetric({ label, value }) {
+  return (
+    <div className="min-w-0 rounded-[var(--radius-md)] border border-border-muted bg-background-subtle p-3">
+      <div className="text-xs text-foreground-muted">{label}</div>
+      <div className="mt-1 tabular-nums text-lg font-semibold text-foreground-intense">{value}</div>
+    </div>
+  );
+}
+
+function GitHubStarsImportDialog({ open, onOpenChange, categories, onImported }) {
+  const [settings, setSettings] = useState({ configured: false });
+  const [token, setToken] = useState('');
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [categoryIds, setCategoryIds] = useState([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    if (!open) {
+      requestRef.current += 1;
+      setSettingsLoading(false);
+      setSettingsSaving(false);
+      setPreviewLoading(false);
+      setImportLoading(false);
+      return;
+    }
+    const requestId = ++requestRef.current;
+    setToken('');
+    setPreview(null);
+    setPreviewError('');
+    setCategoryIds([]);
+    setImportResult(null);
+    setSettingsError('');
+    setSettingsLoading(true);
+    api('/github-stars-settings')
+      .then((result) => {
+        if (requestId !== requestRef.current) return;
+        setSettings(result.settings || { configured: false });
+      })
+      .catch((error) => {
+        if (requestId === requestRef.current) setSettingsError(error.message);
+      })
+      .finally(() => {
+        if (requestId === requestRef.current) setSettingsLoading(false);
+      });
+  }, [open]);
+
+  async function saveToken() {
+    const normalizedToken = token.trim();
+    if (!normalizedToken) return;
+    const requestId = requestRef.current;
+    setSettingsSaving(true);
+    setSettingsError('');
+    try {
+      const result = await api('/github-stars-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ token: normalizedToken })
+      });
+      if (requestId !== requestRef.current) return;
+      setSettings(result.settings || { configured: true });
+      setToken(normalizedToken);
+      setPreview(null);
+      setPreviewError('');
+      setImportResult(null);
+    } catch (error) {
+      if (requestId === requestRef.current) setSettingsError(error.message);
+    } finally {
+      if (requestId === requestRef.current) setSettingsSaving(false);
+    }
+  }
+
+  async function clearToken() {
+    const requestId = requestRef.current;
+    setSettingsSaving(true);
+    setSettingsError('');
+    try {
+      const result = await api('/github-stars-settings', { method: 'DELETE' });
+      if (requestId !== requestRef.current) return;
+      setSettings(result.settings || { configured: false });
+      setToken('');
+      setPreview(null);
+      setPreviewError('');
+      setImportResult(null);
+    } catch (error) {
+      if (requestId === requestRef.current) setSettingsError(error.message);
+    } finally {
+      if (requestId === requestRef.current) setSettingsSaving(false);
+    }
+  }
+
+  async function loadPreview() {
+    const requestId = requestRef.current;
+    setPreviewLoading(true);
+    setPreviewError('');
+    setImportResult(null);
+    try {
+      const result = await api('/programming-records/github-stars/preview', { method: 'POST' });
+      if (requestId !== requestRef.current) return;
+      setPreview(result.preview);
+      setCategoryIds([]);
+    } catch (error) {
+      if (requestId === requestRef.current) setPreviewError(error.message);
+    } finally {
+      if (requestId === requestRef.current) setPreviewLoading(false);
+    }
+  }
+
+  async function confirmImport() {
+    if (!preview?.id || !preview.items.length) return;
+    const requestId = requestRef.current;
+    setImportLoading(true);
+    setPreviewError('');
+    try {
+      const result = await api('/programming-records/github-stars/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          previewId: preview.id,
+          categoryIds,
+          items: preview.items.map(({ normalizedUrl, notes = '' }) => ({ normalizedUrl, notes }))
+        })
+      });
+      if (requestId !== requestRef.current) return;
+      setImportResult(result.import);
+      setPreview(null);
+      await onImported?.(result.import);
+    } catch (error) {
+      if (requestId === requestRef.current) setPreviewError(error.message);
+    } finally {
+      if (requestId === requestRef.current) setImportLoading(false);
+    }
+  }
+
+
+  const previewStatusLabel = preview?.status === 'complete' ? '完整读取' : preview?.status === 'partial' ? '部分读取' : '读取失败';
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onOpenChange(false); }}>
+      <DialogContent className="h-150 max-h-[calc(100dvh-2rem)] sm:w-150">
+        <DialogHeader>
+          <DialogTitle>导入 GitHub Stars</DialogTitle>
+          <DialogDescription>只在你点击读取预览时访问 GitHub；预览确认前不会写入本地记录。</DialogDescription>
+        </DialogHeader>
+        <DialogBody className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex flex-col gap-4 px-6 pb-2">
+            {settingsError && <Alert variant="error"><AlertTitle>GitHub Token 操作失败</AlertTitle><AlertDescription>{settingsError}</AlertDescription></Alert>}
+            <div className="flex flex-col gap-3 rounded-[var(--radius-md)] border border-border bg-background-subtle p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="m-0 text-sm font-medium text-foreground-strong">GitHub Personal Access Token</h3>
+                  <p className="m-0 mt-1 text-xs text-foreground-muted">仅保存于本机 macOS Keychain，不会进入 SQLite、备份或接口响应。</p>
+                  <p className="m-0 mt-1 text-xs text-foreground-muted">创建 Fine-grained Token 时选择 Account permissions → Starring → Read-only；不需要仓库写权限。保存后仅在当前窗口保留输入值，关闭窗口后不会从服务端回显。</p>
+                </div>
+                <Badge variant={settings.configured ? 'success' : 'secondary'} size="sm">{settingsLoading ? '读取中' : settings.configured ? '已配置' : '未配置'}</Badge>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <PasswordInput autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder={settings.configured ? '输入新 Token 以替换（可选）' : '粘贴 GitHub Token'} aria-label="GitHub Personal Access Token" />
+                <LoadingButton type="button" loading={settingsSaving} disabled={!token.trim() || settingsLoading} onClick={saveToken}>保存 Token</LoadingButton>
+                {settings.configured && <LoadingButton type="button" variant="soft" loading={settingsSaving} disabled={settingsLoading} onClick={clearToken}>清除 Token</LoadingButton>}
+              </div>
+            </div>
+
+            {previewError && <Alert variant="error"><AlertTitle>Stars 导入未完成</AlertTitle><AlertDescription>{previewError}</AlertDescription></Alert>}
+            {importResult && (
+              <Alert variant={importResult.failedCount ? 'error' : 'success'} role="status">
+                <AlertTitle>{importResult.failedCount ? 'Stars 导入部分完成' : 'Stars 导入完成'}</AlertTitle>
+                <AlertDescription>
+                  新增 <span className="tabular-nums">{importResult.newCount}</span> 条；确认时重叠 <span className="tabular-nums">{importResult.overlapCount}</span> 条；失败 <span className="tabular-nums">{importResult.failedCount}</span> 条。
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="m-0 text-sm font-medium text-foreground-strong">预览</h3>
+                  <p className="m-0 mt-1 text-xs text-foreground-muted">已存在的规范化 URL 只计入重叠，不会出现在下面的确认列表。</p>
+                </div>
+                <LoadingButton type="button" variant="outline" loading={previewLoading} disabled={!settings.configured || settingsLoading || importLoading} onClick={loadPreview}>读取 Stars 并生成预览</LoadingButton>
+              </div>
+              {!preview && !importResult && <p className="m-0 text-sm text-foreground-muted">{settings.configured ? '点击上方按钮开始读取。' : '先配置 Token，再读取 GitHub Stars。'}</p>}
+            </div>
+
+            {preview && (
+              <>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <ImportMetric label="公开候选" value={preview.totalCount} />
+                  <ImportMetric label="待新增" value={preview.newCount} />
+                  <ImportMetric label="已存在" value={preview.overlapCount} />
+                  <ImportMetric label="失败" value={preview.failedCount} />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground-muted" role="status">
+                  <span>状态：{previewStatusLabel}</span>
+                  <span>已读取 <span className="tabular-nums">{preview.progress.pagesFetched}</span> 页</span>
+                  <span>已处理 <span className="tabular-nums">{preview.progress.processedCount}</span> 项</span>
+                  {!preview.progress.complete && <span>结果不完整，请确认失败原因后再决定是否导入。</span>}
+                </div>
+                {preview.failures.length > 0 && (
+                  <Alert variant="error">
+                    <AlertTitle>部分 Stars 未读取</AlertTitle>
+                    <AlertDescription>{preview.failures.map((failure) => `第 ${failure.page} 页${failure.item ? `第 ${failure.item} 项` : ''}：${failure.reason}`).join('；')}</AlertDescription>
+                  </Alert>
+                )}
+                <div className="flex flex-col gap-2">
+                  <h3 className="m-0 text-sm font-medium text-foreground-strong">确认列表（仅新增项目）</h3>
+                  {preview.items.length ? (
+                    <div className="flex max-h-72 flex-col gap-2 overflow-y-auto rounded-[var(--radius-md)] border border-border p-2">
+                      {preview.items.map((item, index) => (
+                        <article key={item.normalizedUrl} className="min-w-0 rounded-[var(--radius-md)] border border-border-muted p-3">
+                          <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <h4 className="m-0 wrap-break-word text-sm font-medium text-foreground-strong">{item.title}</h4>
+                              <p className="m-0 mt-1 break-all text-xs text-foreground-muted">{item.normalizedUrl}</p>
+                            </div>
+                            {item.sourceSnapshot.github?.stars !== null && item.sourceSnapshot.github?.stars !== undefined && <span className="shrink-0 text-xs tabular-nums text-foreground-muted">Stars {item.sourceSnapshot.github.stars.toLocaleString('zh-CN')}</span>}
+                          </div>
+                          <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
+                            {githubSourceTags(item.sourceSnapshot).map((tag) => <Badge key={tag} className="max-w-full break-all whitespace-normal" variant="soft" size="sm">{tag}</Badge>)}
+                          </div>
+                          <Field>
+                            <FieldLabel htmlFor={`github-star-notes-${index}`}>中文备注（可选）</FieldLabel>
+                            <Textarea id={`github-star-notes-${index}`} rows={2} maxLength={4000} value={item.notes || ''} onChange={(event) => setPreview((current) => current ? { ...current, items: updateImportItemNotes(current.items, item.normalizedUrl, event.target.value) } : current)} placeholder="写下你为什么收藏、准备如何使用或需要注意的事项" />
+                            <FieldDescription>确认导入后保存到这条编程记录的备注。</FieldDescription>
+                          </Field>
+                        </article>
+                      ))}
+                    </div>
+                  ) : <p className="m-0 text-sm text-foreground-muted">没有新的公开项目可导入。</p>}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <h3 className="m-0 text-sm font-medium text-foreground-strong">批量分类（可选）</h3>
+                  <div role="group" aria-label="为 Stars 导入记录选择分类" className="flex flex-wrap gap-3">
+                    {categories.filter((category) => category.isActive).map((category) => {
+                      const checked = categoryIds.includes(category.id);
+                      return (
+                        <label key={category.id} className="flex select-none items-center gap-2 text-sm">
+                          <Checkbox aria-label={`导入分类：${category.name}`} checked={checked} onCheckedChange={(nextChecked) => setCategoryIds((current) => toggleImportCategory(current, category.id, nextChecked))} />
+                          <span>{category.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="m-0 text-xs text-foreground-muted">不选择分类也可以导入；GitHub owner、语言和 topics 会作为真实标签保存。</p>
+                </div>
+              </>
+            )}
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="soft" disabled={previewLoading || importLoading || settingsSaving} onClick={() => onOpenChange(false)}>关闭</Button>
+          {preview?.items.length > 0 && <LoadingButton loading={importLoading} disabled={previewLoading || settingsSaving} onClick={confirmImport}>确认导入 <span className="tabular-nums">{preview.items.length}</span> 条</LoadingButton>}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -83,7 +355,8 @@ function recordInputFrom(record) {
     categoryIds: record.categories.map((category) => category.id),
     tagsText: (record.userTags || record.tags).join('、'),
     notes: record.notes,
-    sourceSnapshot: record.sourceSnapshot || null
+    sourceSnapshot: record.sourceSnapshot || null,
+    isDigested: record.isDigested
   };
 }
 
@@ -169,6 +442,19 @@ function RecordEditor({ categories, value, onChange, error, captureLoading, capt
   );
 }
 
+function DigestMarker({ record, onChange }) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-foreground-strong select-none">
+      <Checkbox
+        checked={record.isDigested}
+        aria-label={`标记「${record.title}」${record.isDigested ? '为未消化' : '为已消化'}`}
+        onCheckedChange={(nextChecked) => onChange(record, nextChecked)}
+      />
+      <span>{record.isDigested ? '已消化' : '未消化'}</span>
+    </label>
+  );
+}
+
 function RecordActions({ record, onView, onEdit, onStatusChange, onDelete }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -198,7 +484,7 @@ function RecordActions({ record, onView, onEdit, onStatusChange, onDelete }) {
   );
 }
 
-function RecordCards({ records, onView, onEdit, onStatusChange, onDelete }) {
+function RecordCards({ records, onView, onEdit, onStatusChange, onDigestedChange, onDelete }) {
   return (
     <div className="flex flex-col gap-3 lg:hidden">
       {records.map((record) => (
@@ -206,6 +492,7 @@ function RecordCards({ records, onView, onEdit, onStatusChange, onDelete }) {
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="min-w-0 flex-1 text-base font-semibold text-foreground-intense wrap-break-word">{record.title}</h2>
+              <DigestMarker record={record} onChange={onDigestedChange} />
               <Badge variant={record.status === 'archived' ? 'secondary' : 'success'} size="sm">{record.status === 'archived' ? '已归档' : '有效'}</Badge>
               {record.sourceType === 'github' && <Badge variant="outline" size="sm">GitHub</Badge>}
             </div>
@@ -420,6 +707,7 @@ function ProgrammingRecordsPage() {
   const [captureError, setCaptureError] = useState('');
   const [captureNotice, setCaptureNotice] = useState('');
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [githubStarsDialogOpen, setGitHubStarsDialogOpen] = useState(false);
   const [detailRecordId, setDetailRecordId] = useState(null);
   const [detailRecord, setDetailRecord] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -630,7 +918,8 @@ function ProgrammingRecordsPage() {
         categoryIds: recordInput.categoryIds,
         tags: parseTags(recordInput.tagsText),
         notes: recordInput.notes,
-        sourceSnapshot: recordInput.sourceSnapshot
+        sourceSnapshot: recordInput.sourceSnapshot,
+        isDigested: recordInput.isDigested
       };
       if (editingRecord) {
         await api(`/programming-records/${editingRecord.id}`, { method: 'PATCH', body: JSON.stringify(input) });
@@ -659,6 +948,16 @@ function ProgrammingRecordsPage() {
     }
   }
 
+  async function changeRecordDigested(record, isDigested) {
+    try {
+      await api(`/programming-records/${record.id}`, { method: 'PATCH', body: JSON.stringify({ isDigested }) });
+      setNotice(isDigested ? '记录已标记为已消化。' : '记录已标记为未消化。');
+      await load();
+    } catch {
+      // API 错误已由工作台 Shell 的全局 Toast 展示。
+    }
+  }
+
   async function deleteRecord(id) {
     try {
       await api(`/programming-records/${id}`, { method: 'DELETE' });
@@ -670,6 +969,12 @@ function ProgrammingRecordsPage() {
     }
   }
 
+  async function handleGitHubStarsImported(result) {
+    const statusLabel = result.failedCount ? '部分完成' : '完成';
+    setNotice(`GitHub Stars 导入${statusLabel}：新增 ${result.newCount} 条，确认时重叠 ${result.overlapCount} 条，失败 ${result.failedCount} 条。`);
+    await load();
+  }
+
   return (
     <SectionCard title="编程记录">
       <div className="flex flex-col gap-5">
@@ -679,6 +984,7 @@ function ProgrammingRecordsPage() {
             <p className="m-0 mt-1 text-xs text-foreground-muted"><span className="tabular-nums">{total}</span> 条符合当前条件的记录</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setGitHubStarsDialogOpen(true)}>导入 GitHub Stars</Button>
             <Button variant="outline" onClick={() => setCategoryManagerOpen(true)}>管理分类</Button>
             <Button onClick={openCreate}><Plus data-icon="start" />新增记录</Button>
           </div>
@@ -725,7 +1031,7 @@ function ProgrammingRecordsPage() {
             <div className="hidden overflow-x-auto lg:block">
               <Table hoverableRows className="min-w-220">
                 <TableHeader>
-                  <TableRow><TableHead>资料</TableHead><TableHead>分类与标签</TableHead><TableHead>状态</TableHead><TableHead>更新</TableHead><TableHead className="whitespace-nowrap text-center">操作</TableHead></TableRow>
+                  <TableRow><TableHead>资料</TableHead><TableHead>分类与标签</TableHead><TableHead>状态</TableHead><TableHead>消化</TableHead><TableHead>更新</TableHead><TableHead className="whitespace-nowrap text-center">操作</TableHead></TableRow>
                 </TableHeader>
                 <TableBody>
                   {records.map((record) => (
@@ -737,6 +1043,7 @@ function ProgrammingRecordsPage() {
                       </TableCell>
                       <TableCell className="min-w-48 align-top"><div className="flex flex-wrap gap-1.5">{record.categories.map((category) => <Badge key={category.id} variant={category.isActive ? 'outline' : 'secondary'} size="sm">{category.name}{category.isActive ? '' : '（已停用）'}</Badge>)}{record.tags.map((tag) => <Badge key={tag} variant="soft" size="sm">{tag}</Badge>)}</div></TableCell>
                       <TableCell className="whitespace-nowrap align-top"><Badge variant={record.status === 'archived' ? 'secondary' : 'success'} size="sm">{record.status === 'archived' ? '已归档' : '有效'}</Badge>{record.stars !== null && <div className="mt-2 text-xs tabular-nums text-foreground-muted">Stars {record.stars.toLocaleString('zh-CN')}</div>}</TableCell>
+                      <TableCell className="whitespace-nowrap align-top"><DigestMarker record={record} onChange={changeRecordDigested} /></TableCell>
                       <TableCell className="whitespace-nowrap align-top text-sm tabular-nums text-foreground-muted">{formatDateTime(record.updatedAt)}</TableCell>
                       <TableCell className="min-w-108 align-top"><RecordActions record={record} onView={openDetails} onEdit={openEdit} onStatusChange={changeRecordStatus} onDelete={deleteRecord} /></TableCell>
                     </TableRow>
@@ -744,7 +1051,7 @@ function ProgrammingRecordsPage() {
                 </TableBody>
               </Table>
             </div>
-            <RecordCards records={records} onView={openDetails} onEdit={openEdit} onStatusChange={changeRecordStatus} onDelete={deleteRecord} />
+            <RecordCards records={records} onView={openDetails} onEdit={openEdit} onStatusChange={changeRecordStatus} onDigestedChange={changeRecordDigested} onDelete={deleteRecord} />
             {totalPages > 1 && (
               <Pagination className="justify-end" aria-label="编程记录分页">
                 <PaginationList>
@@ -777,6 +1084,8 @@ function ProgrammingRecordsPage() {
       <RecordDetails open={detailRecordId !== null} record={detailRecord} loading={detailLoading} error={detailError} onClose={closeDetails} />
 
       <CategoryManager open={categoryManagerOpen} onOpenChange={setCategoryManagerOpen} categories={categories} onChanged={load} />
+
+      <GitHubStarsImportDialog open={githubStarsDialogOpen} onOpenChange={setGitHubStarsDialogOpen} categories={categories} onImported={handleGitHubStarsImported} />
     </SectionCard>
   );
 }

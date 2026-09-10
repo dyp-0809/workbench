@@ -116,3 +116,17 @@
 - Do not hand-roll a component that exists in the library. Check the component list first:
   https://appica.dev/llms.txt
 - Every documentation page is served as clean markdown at `<url>.md` - fetch that, not the HTML.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This monorepo uses a multi-context layout with `CONTEXT-MAP.md` and context-specific `CONTEXT.md` files. See `docs/agents/domain.md`.

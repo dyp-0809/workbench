@@ -12,7 +12,8 @@ const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require
 const { runKindleSync } = require('./kindle-sync');
 const { buildDashboardPromptCandidates, dashboardTimeContext, dashboardDateKey } = require('./dashboard-prompts');
 const { createPublicWebCapture } = require('./public-web-capture');
-const { createGitHubRepositoryCapture, parseGitHubRepositoryUrl } = require('./github-repository-capture');
+const { createGitHubRepositoryCapture, mapGitHubRepository, parseGitHubRepositoryUrl } = require('./github-repository-capture');
+const { clearGitHubStarsToken, fetchGitHubStarredPage, getSafeGitHubStarsSettings, readGitHubStarsToken, writeGitHubStarsToken } = require('./github-stars');
 const DEFAULT_STOCK_ALERT_RULES = [
   { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
   { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
@@ -44,6 +45,8 @@ const DEFAULT_PROGRAMMING_RECORD_CATEGORIES = [
   { id: 'programming-frontend', name: '前端', sortOrder: 5 },
   { id: 'programming-backend', name: '后端', sortOrder: 6 }
 ];
+const GITHUB_STARS_PAGE_SIZE = 100;
+const GITHUB_STARS_PREVIEW_TTL_MS = 30 * 60 * 1000;
 const PROGRAMMING_TRACKING_PARAMETER = /^(?:utm_.+|fbclid|gclid|mc_cid|mc_eid)$/i;
 
 function normalizeProgrammingText(value) {
@@ -333,6 +336,7 @@ function migrateContentCandidates(db) {
 function migrateProgrammingRecords(db) {
   const columns = db.prepare('PRAGMA table_info(programming_records)').all().map((column) => column.name);
   if (!columns.includes('source_snapshot')) db.exec('ALTER TABLE programming_records ADD COLUMN source_snapshot TEXT');
+  if (!columns.includes('is_digested')) db.exec('ALTER TABLE programming_records ADD COLUMN is_digested INTEGER NOT NULL DEFAULT 0 CHECK(is_digested IN (0, 1))');
 }
 
 function migrateProgrammingRecordTags(db) {
@@ -623,6 +627,7 @@ function initializeSchema(db) {
       github_repository TEXT,
       source_stars INTEGER,
       source_snapshot TEXT,
+      is_digested INTEGER NOT NULL DEFAULT 0 CHECK(is_digested IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
       archived_at TEXT,
       created_at TEXT NOT NULL,
@@ -684,6 +689,14 @@ function createContentHub(options = {}) {
   const finnhubSettings = options.finnhubSettings;
   const quoteFetcher = options.quoteFetcher;
   const valuationFetcher = options.valuationFetcher;
+  const configuredGitHubStarsSettings = options.githubStarsSettings || {};
+  const githubStarsSettings = {
+    get: typeof configuredGitHubStarsSettings.get === 'function' ? configuredGitHubStarsSettings.get : getSafeGitHubStarsSettings,
+    set: typeof configuredGitHubStarsSettings.set === 'function' ? configuredGitHubStarsSettings.set : writeGitHubStarsToken,
+    clear: typeof configuredGitHubStarsSettings.clear === 'function' ? configuredGitHubStarsSettings.clear : clearGitHubStarsToken,
+    readToken: typeof configuredGitHubStarsSettings.readToken === 'function' ? configuredGitHubStarsSettings.readToken : readGitHubStarsToken
+  };
+  const githubStarsPageFetcher = typeof options.githubStarsPageFetcher === 'function' ? options.githubStarsPageFetcher : fetchGitHubStarredPage;
   const kindleSync = typeof options.kindleSync === 'function' ? options.kindleSync : runKindleSync;
   const capturePublicWebPage = createPublicWebCapture({
     hostnameResolver: options.hostnameResolver,
@@ -701,6 +714,7 @@ function createContentHub(options = {}) {
   fs.mkdirSync(backupDirectory, { recursive: true });
   let retentionNow = now();
   let expiringNow = null;
+  const githubStarsPreviews = new Map();
   let server;
   let pairing;
 
@@ -883,6 +897,7 @@ function createContentHub(options = {}) {
       githubRepository: row.github_repository,
       stars: row.source_stars === null ? null : Number(row.source_stars),
       sourceSnapshot: parseJson(row.source_snapshot, null),
+      isDigested: Boolean(row.is_digested),
       status: row.status,
       archivedAt: row.archived_at,
       createdAt: row.created_at,
@@ -956,6 +971,8 @@ function createContentHub(options = {}) {
     const notes = normalizeProgrammingText(input.notes);
     const categoryIds = normalizeProgrammingRecordCategoryIds(input.categoryIds);
     const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot(input.sourceSnapshot);
+    const isDigested = input.isDigested === undefined ? false : input.isDigested;
+    if (typeof isDigested !== 'boolean') throw new Error('消化状态必须是布尔值。');
     validateProgrammingRecordSourceSnapshot(source, sourceSnapshot);
     const sourceFields = sourceFieldsForProgrammingRecord(source, sourceSnapshot);
     const tags = mergeProgrammingRecordTags(normalizeProgrammingRecordTags(input.tags), sourceSnapshot);
@@ -970,6 +987,7 @@ function createContentHub(options = {}) {
       notes,
       ...sourceFields,
       sourceSnapshot,
+      isDigested,
       status: 'active',
       archivedAt: null,
       createdAt: timestamp,
@@ -978,9 +996,9 @@ function createContentHub(options = {}) {
     const save = db.transaction(() => {
       db.prepare(`INSERT INTO programming_records(
         id, url, normalized_url, title, summary, notes, source_type, github_owner, github_repository,
-        source_stars, source_snapshot, status, archived_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.githubOwner, record.githubRepository, record.stars, record.sourceSnapshot ? JSON.stringify(record.sourceSnapshot) : null, record.status, record.archivedAt, record.createdAt, record.updatedAt);
+        source_stars, source_snapshot, is_digested, status, archived_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.url, record.normalizedUrl, record.title, record.summary, record.notes, record.sourceType, record.githubOwner, record.githubRepository, record.stars, record.sourceSnapshot ? JSON.stringify(record.sourceSnapshot) : null, Number(record.isDigested), record.status, record.archivedAt, record.createdAt, record.updatedAt);
       replaceProgrammingRecordCategories(record.id, categoryIds);
       replaceProgrammingRecordTags(record.id, tags, timestamp);
     });
@@ -1031,6 +1049,8 @@ function createContentHub(options = {}) {
     const serializedSourceSnapshot = typeof sourceSnapshot === 'string'
       ? sourceSnapshot
       : sourceSnapshot ? JSON.stringify(sourceSnapshot) : null;
+    const isDigested = input.isDigested === undefined ? Boolean(existing.is_digested) : input.isDigested;
+    if (typeof isDigested !== 'boolean') throw new Error('消化状态必须是布尔值。');
     const status = input.status === undefined ? existing.status : input.status;
     if (!['active', 'archived'].includes(status)) throw new Error('记录状态无效。');
     const updatedAt = asIso(undefined, now());
@@ -1038,10 +1058,10 @@ function createContentHub(options = {}) {
     const save = db.transaction(() => {
       db.prepare(`UPDATE programming_records
         SET url = ?, normalized_url = ?, title = ?, summary = ?, notes = ?, source_type = ?, github_owner = ?,
-          github_repository = ?, source_stars = ?, source_snapshot = ?, status = ?, archived_at = ?, updated_at = ?
+          github_repository = ?, source_stars = ?, source_snapshot = ?, is_digested = ?, status = ?, archived_at = ?, updated_at = ?
         WHERE id = ?`).run(source.url, source.normalizedUrl, title, summary, notes, sourceFields.sourceType,
         sourceFields.githubOwner, sourceFields.githubRepository, sourceFields.stars, serializedSourceSnapshot,
-        status, archivedAt, updatedAt, id);
+        Number(isDigested), status, archivedAt, updatedAt, id);
       if (categoryIds !== null) replaceProgrammingRecordCategories(id, categoryIds);
       if (tags !== null) replaceProgrammingRecordTags(id, tags, updatedAt);
     });
@@ -1126,6 +1146,204 @@ function createContentHub(options = {}) {
         sourceSnapshot
       }
     };
+  }
+
+  function buildGitHubStarsImportItem(repository, fetchedAt) {
+    if (repository?.private === true || String(repository?.visibility || '').toLocaleLowerCase() === 'private') return null;
+    const capture = mapGitHubRepository(repository);
+    const source = normalizeProgrammingRecordUrl(capture.canonicalUrl);
+    const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot({
+      requestedUrl: source.normalizedUrl,
+      finalUrl: source.normalizedUrl,
+      canonicalUrl: source.normalizedUrl,
+      title: capture.title,
+      summary: capture.summary,
+      author: capture.author,
+      imageUrl: capture.imageUrl,
+      github: capture.github,
+      fetchedAt
+    });
+    return {
+      url: source.normalizedUrl,
+      normalizedUrl: source.normalizedUrl,
+      title: sourceSnapshot.title,
+      summary: sourceSnapshot.summary,
+      notes: '',
+      sourceSnapshot
+    };
+  }
+
+  function pruneGitHubStarsPreviews() {
+    const expiry = now().getTime() - GITHUB_STARS_PREVIEW_TTL_MS;
+    for (const [id, preview] of githubStarsPreviews) {
+      if (preview.createdAt <= expiry) githubStarsPreviews.delete(id);
+    }
+  }
+
+  async function previewGitHubStarsImport() {
+    let token;
+    try {
+      const readToken = typeof githubStarsSettings.readToken === 'function' ? githubStarsSettings.readToken : readGitHubStarsToken;
+      token = await readToken();
+    } catch {
+      throw new Error('无法读取 GitHub Personal Access Token。');
+    }
+    if (!token) throw new Error('请先配置 GitHub Personal Access Token。');
+
+    const failures = [];
+    const items = [];
+    const seenUrls = new Set();
+    const existingUrl = db.prepare('SELECT id FROM programming_records WHERE normalized_url = ?');
+    const fetchedAt = asIso(undefined, now());
+    let page = 1;
+    let pagesFetched = 0;
+    let fetchedCount = 0;
+    let candidateCount = 0;
+    let overlapCount = 0;
+    while (true) {
+      let pageResult;
+      try {
+        pageResult = await githubStarsPageFetcher(token, { page, perPage: GITHUB_STARS_PAGE_SIZE });
+      } catch {
+        failures.push({ page, reason: 'GitHub Stars 页面读取失败。' });
+        break;
+      }
+      pagesFetched += 1;
+      const repositories = Array.isArray(pageResult) ? pageResult : pageResult?.repositories;
+      if (!Array.isArray(repositories)) {
+        failures.push({ page, reason: 'GitHub Stars 页面格式无效。' });
+        break;
+      }
+      fetchedCount += repositories.length;
+      for (const [index, repository] of repositories.entries()) {
+        if (repository?.private === true || String(repository?.visibility || '').toLocaleLowerCase() === 'private') continue;
+        candidateCount += 1;
+        let item;
+        try {
+          item = buildGitHubStarsImportItem(repository, fetchedAt);
+        } catch {
+          failures.push({ page, item: index + 1, reason: 'GitHub 仓库资料不完整。' });
+          continue;
+        }
+        if (seenUrls.has(item.normalizedUrl)) continue;
+        seenUrls.add(item.normalizedUrl);
+        if (existingUrl.get(item.normalizedUrl)) overlapCount += 1;
+        else items.push(item);
+      }
+      const hasNext = typeof pageResult?.hasNext === 'boolean'
+        ? pageResult.hasNext
+        : repositories.length >= GITHUB_STARS_PAGE_SIZE;
+      if (!hasNext || !repositories.length) break;
+      page += 1;
+    }
+
+    const failedCount = failures.length;
+    const status = failedCount ? (pagesFetched ? 'partial' : 'failed') : 'complete';
+    const progress = { pagesFetched, processedCount: fetchedCount, complete: status === 'complete' };
+    const previewId = createId();
+    const preview = {
+      createdAt: now().getTime(),
+      items,
+      totalCount: candidateCount,
+      candidateCount,
+      newCount: items.length,
+      overlapCount,
+      failedCount,
+      status,
+      progress,
+      failures
+    };
+    pruneGitHubStarsPreviews();
+    githubStarsPreviews.set(previewId, preview);
+    return {
+      preview: {
+        id: previewId,
+        items,
+        totalCount: candidateCount,
+        candidateCount,
+        newCount: items.length,
+        overlapCount,
+        failedCount,
+        status,
+        progress,
+        failures
+      }
+    };
+  }
+
+  function confirmGitHubStarsImport(input = {}) {
+    pruneGitHubStarsPreviews();
+    const previewId = normalizeProgrammingText(input.previewId);
+    const preview = githubStarsPreviews.get(previewId);
+    if (!preview) throw new Error('导入预览不存在或已过期。');
+    const categoryIds = normalizeProgrammingRecordCategoryIds(input.categoryIds);
+    const notesByUrl = new Map();
+    for (const item of Array.isArray(input.items) ? input.items : []) {
+      if (!item || typeof item !== 'object') continue;
+      try {
+        notesByUrl.set(normalizeProgrammingRecordUrl(item.normalizedUrl).normalizedUrl, normalizeProgrammingText(item.notes).slice(0, 4_000));
+      } catch {
+        // Ignore notes for malformed client-side preview rows.
+      }
+    }
+    const result = {
+      requestedCount: preview.items.length,
+      newCount: 0,
+      overlapCount: 0,
+      failedCount: 0,
+      failures: []
+    };
+    const timestamp = asIso(undefined, now());
+    const findExisting = db.prepare('SELECT id FROM programming_records WHERE normalized_url = ?');
+    const insertRecord = db.prepare(`INSERT INTO programming_records(
+      id, url, normalized_url, title, summary, notes, source_type, github_owner, github_repository,
+      source_stars, source_snapshot, is_digested, status, archived_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', NULL, ?, ?)`);
+    const save = db.transaction(() => {
+      const seenUrls = new Set();
+      for (const item of preview.items) {
+        try {
+          const source = normalizeProgrammingRecordUrl(item.url);
+          if (seenUrls.has(source.normalizedUrl) || findExisting.get(source.normalizedUrl)) {
+            result.overlapCount += 1;
+            continue;
+          }
+          seenUrls.add(source.normalizedUrl);
+          const title = normalizeProgrammingText(item.title);
+          const notes = notesByUrl.get(source.normalizedUrl) || '';
+          if (!title) throw new Error('title');
+          const summary = normalizeProgrammingText(item.summary);
+          const sourceSnapshot = normalizeProgrammingRecordSourceSnapshot(item.sourceSnapshot);
+          validateProgrammingRecordSourceSnapshot(source, sourceSnapshot);
+          const sourceFields = sourceFieldsForProgrammingRecord(source, sourceSnapshot);
+          const recordId = createId();
+          insertRecord.run(
+            recordId,
+            source.url,
+            source.normalizedUrl,
+            title,
+            summary,
+            notes,
+            sourceFields.sourceType,
+            sourceFields.githubOwner,
+            sourceFields.githubRepository,
+            sourceFields.stars,
+            JSON.stringify(sourceSnapshot),
+            timestamp,
+            timestamp
+          );
+          replaceProgrammingRecordCategories(recordId, categoryIds);
+          replaceProgrammingRecordTags(recordId, mergeProgrammingRecordTags([], sourceSnapshot), timestamp);
+          result.newCount += 1;
+        } catch {
+          result.failedCount += 1;
+          result.failures.push({ reason: '导入项目失败。' });
+        }
+      }
+    });
+    save();
+    githubStarsPreviews.delete(previewId);
+    return { import: result };
   }
 
   function deleteProgrammingRecord(id) {
@@ -2550,6 +2768,38 @@ async function createStockPosition(input) {
       }
       if (request.method === 'GET' && pathname === '/v1/profile') return sendJson(response, 200, { profile: getProfile() });
       if (request.method === 'PUT' && pathname === '/v1/preference-overrides') return sendJson(response, 200, { preference: setPreferenceOverride(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/github-stars-settings') {
+        try {
+          const settings = await githubStarsSettings.get();
+          return sendJson(response, 200, { settings: { configured: Boolean(settings?.configured) } });
+        } catch {
+          return sendJson(response, 400, { error: '无法读取 GitHub Stars 配置。' });
+        }
+      }
+      if (request.method === 'PUT' && pathname === '/v1/github-stars-settings') {
+        try {
+          await githubStarsSettings.set(await parseRequest(request));
+          githubStarsPreviews.clear();
+          return sendJson(response, 200, { settings: { configured: true } });
+        } catch {
+          return sendJson(response, 400, { error: '无法保存 GitHub Stars 配置。' });
+        }
+      }
+      if (request.method === 'DELETE' && pathname === '/v1/github-stars-settings') {
+        try {
+          await githubStarsSettings.clear();
+          githubStarsPreviews.clear();
+          return sendJson(response, 200, { settings: { configured: false } });
+        } catch {
+          return sendJson(response, 400, { error: '无法清除 GitHub Stars 配置。' });
+        }
+      }
+      if (request.method === 'POST' && pathname === '/v1/programming-records/github-stars/preview') {
+        return sendJson(response, 200, await previewGitHubStarsImport());
+      }
+      if (request.method === 'POST' && pathname === '/v1/programming-records/github-stars/import') {
+        return sendJson(response, 200, confirmGitHubStarsImport(await parseRequest(request)));
+      }
       if (request.method === 'GET' && pathname === '/v1/programming-records/categories') {
         return sendJson(response, 200, { categories: listProgrammingRecordCategories() });
       }

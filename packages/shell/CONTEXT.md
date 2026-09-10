@@ -43,3 +43,11 @@ _Avoid_: 推断性健康提示
 **稳定提示游标**:
 The persisted ID of the last valid primary prompt, used to avoid immediate repetition across homepage entry or refresh without changing the prompt while the page is open.
 _Avoid_: 数组索引游标
+
+**确认式采集**:
+An unsaved URL capture session whose fetched values remain editable form state until the user explicitly saves the record.
+_Avoid_: 自动落库, 抓取即保存
+
+**重复地址**:
+A normalized URL that already has a saved programming record; adding it reports the existing record instead of silently creating or overwriting another one.
+_Avoid_: 自动覆盖, 静默重复

@@ -253,7 +253,8 @@ function StockPositionsPage() {
         </div>
         {priceRefreshMessage && <p className="mb-3 text-sm text-success-emphasis">{priceRefreshMessage}</p>}
         {loading ? <p className="text-foreground-muted">正在加载持仓…</p> : positions.length ? (
-          <Table hoverableRows>
+          <div style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+            <Table hoverableRows style={{ marginInline: 'auto' }}>
             <TableHeader>
               <TableRow>
                 <TableHead>代码</TableHead>
@@ -317,6 +318,7 @@ function StockPositionsPage() {
               })}
             </TableBody>
           </Table>
+          </div>
         ) : <Empty description="暂无持仓，点击「新增持仓」添加第一笔" />}
 
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>

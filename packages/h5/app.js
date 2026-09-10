@@ -10,6 +10,10 @@ const DEFAULT_CONTENT_PROFILE = '程序员、摄影爱好者、美股长期投�
 let tweetGenerationContext = '';
 let previousTweetDrafts = [];
 const CONTENT_PROFILE_STORAGE_KEY = 'contentProfile';
+const TWEET_RECORDS_STORAGE_KEY = 'xAssistantTweetRecords';
+
+let currentHistorySource = '';
+let historyTweetRecords = [];
 
 $('#ideaLanguageSelect').value = 'zh';
 $('#contentProfileInput').value = localStorage.getItem(CONTENT_PROFILE_STORAGE_KEY) || '';
@@ -17,6 +21,7 @@ initializeChoiceTags();
 initializeHumanToneControl();
 initializeTweetStyleButtons();
 initializeTweetLengthTabs();
+renderTweetHistory();
 
 function initializeChoiceTags() {
   for (const button of document.querySelectorAll('[data-choice-target]')) {
@@ -140,6 +145,9 @@ $('#settingsForm').addEventListener('submit', (event) => {
 $('#modelSelect').addEventListener('change', () => {
   localStorage.setItem('deepseekModel', $('#modelSelect').value);
 });
+$('#pastePostButton').addEventListener('click', pastePost);
+$('#openPostRewriteButton').addEventListener('click', openPostRewrite);
+$('#generateHistoryRewriteButton').addEventListener('click', generateHistoryRewrite);
 $('#draftButton').addEventListener('click', generateDrafts);
 $('#ideasRefreshButton').addEventListener('click', generateIdeas);
 $('#generateContributionSuggestionsButton').addEventListener('click', generateContributionSuggestions);
@@ -174,6 +182,192 @@ $('#floatingTweetRewriteButton').addEventListener('click', rewriteClipboardTweet
 $('#testConnectionButton').addEventListener('click', testConnection);
 if (localStorage.getItem('deepseekApiKey')) testConnection();
 
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function readTweetRecords() {
+  try {
+    const value = JSON.parse(localStorage.getItem(TWEET_RECORDS_STORAGE_KEY) || '[]');
+    if (!Array.isArray(value)) return [];
+    return value.filter((record) => record && typeof record.text === 'string' && record.text.trim() && /^\d{4}-\d{2}-\d{2}$/.test(record.date))
+      .map((record) => ({ date: record.date, text: record.text.trim() }));
+  } catch {
+    return [];
+  }
+}
+
+function writeTweetRecords(records) {
+  localStorage.setItem(TWEET_RECORDS_STORAGE_KEY, JSON.stringify(records));
+}
+
+function buildTweetTranslationPrompt(language) {
+  return `你是推文翻译助手。把用户提供的${language}推文准确翻译成自然、完整的中文。
+要求：
+1. 只翻译，不解释，不总结，不添加信息。
+2. 保留原文的语气、段落和换行；专有名词使用常见中文译法，无法确定时保留原文。
+3. 只输出 JSON：{"translation":string}`;
+}
+
+async function translateTweetToChinese(text, language) {
+  const result = await requestModel(
+    getSettings(),
+    { sourceLanguage: languageNames[language] || languageNames.en, sourceTweet: text, targetLanguage: '中文' },
+    buildTweetTranslationPrompt(languageNames[language] || languageNames.en)
+  );
+  const translation = String(result?.translation || '').trim();
+  if (!translation) throw new Error('模型没有返回中文翻译。');
+  return translation;
+}
+
+async function saveTweetRecord(sourceText) {
+  const text = sourceText.trim();
+  const language = detectReplyLanguage(text);
+  const savedText = language === 'zh' ? text : await translateTweetToChinese(text, language);
+  const records = readTweetRecords();
+  records.push({ date: getLocalDateKey(), text: savedText });
+  writeTweetRecords(records);
+  renderTweetHistory();
+  showToast('已保存到本地推文记录', 'success');
+  return savedText;
+}
+
+function renderTweetHistory() {
+  historyTweetRecords = readTweetRecords();
+  $('#tweetRecordCount').textContent = `${historyTweetRecords.length} 条`;
+  $('#tweetRecordCountBadge').textContent = String(historyTweetRecords.length);
+  const empty = $('#tweetHistoryEmpty');
+  const list = $('#tweetHistoryList');
+  empty.classList.toggle('hidden', historyTweetRecords.length > 0);
+  list.replaceChildren();
+
+  const grouped = new Map();
+  for (const record of historyTweetRecords) {
+    if (!grouped.has(record.date)) grouped.set(record.date, []);
+    grouped.get(record.date).push(record);
+  }
+  for (const date of [...grouped.keys()].sort().reverse()) {
+    const group = document.createElement('section');
+    group.className = 'tweet-history-group';
+    const heading = document.createElement('div');
+    heading.className = 'tweet-history-heading';
+    const dateElement = document.createElement('time');
+    dateElement.dateTime = date;
+    dateElement.textContent = `${date} · ${grouped.get(date).length} 条`;
+    const clear = document.createElement('button');
+    clear.className = 'secondary-button';
+    clear.type = 'button';
+    clear.textContent = '删除当天';
+    clear.addEventListener('click', () => deleteTweetHistoryDate(date));
+    heading.append(dateElement, clear);
+
+    const items = document.createElement('div');
+    items.className = 'tweet-history-items';
+    for (const record of grouped.get(date)) {
+      const item = document.createElement('button');
+      item.className = 'tweet-history-item';
+      item.type = 'button';
+      item.textContent = record.text;
+      item.addEventListener('click', () => openHistoryRewrite(record.text));
+      items.append(item);
+    }
+    group.append(heading, items);
+    list.append(group);
+  }
+}
+
+function deleteTweetHistoryDate(date) {
+  const count = historyTweetRecords.filter((record) => record.date === date).length;
+  if (!window.confirm(`确定删除 ${date} 的 ${count} 条推文记录吗？`)) return;
+  writeTweetRecords(historyTweetRecords.filter((record) => record.date !== date));
+  renderTweetHistory();
+  showToast(`已删除 ${date} 的推文记录`, 'success');
+}
+
+function openPostRewrite() {
+  const source = $('#postInput').value.trim();
+  if (!source) {
+    showError('请先填写帖子正文。');
+    showToast('缺少帖子正文', 'error');
+    $('#postInput').focus();
+    return;
+  }
+  openHistoryRewrite(source);
+}
+
+function openHistoryRewrite(text) {
+  currentHistorySource = text;
+  $('#historyRewriteSource').textContent = text;
+  $('#historyRewriteResult').classList.add('hidden');
+  $('#historyRewriteLoading').classList.add('hidden');
+  $('#historyRewriteStrategy').replaceChildren();
+  $('#historyRewriteDraft').replaceChildren();
+  $('#historyRewriteDialog').showModal();
+}
+
+function renderHistoryRewrite(result, language) {
+  $('#historyRewriteStrategy').replaceChildren(
+    makeTweetLine('二创思路', result.strategy || '提炼原帖中的有效信息，形成独立判断。'),
+    makeTweetLine('新增价值', result.valueAdded || '未返回，请人工确认是否提供了原帖之外的新判断。'),
+    makeTweetLine('读者收获', result.readerBenefit || '未返回，请人工确认读者能获得的具体价值。'),
+    ...(result.risk ? [makeTweetLine('风险提示', result.risk)] : [])
+  );
+  const card = document.createElement('article');
+  card.className = 'draft-item';
+  const text = document.createElement('p');
+  text.textContent = result.posts[0];
+  card.append(text);
+  if (language !== 'zh' && result.translation) card.append(makeTweetLine('中文对照', result.translation));
+  card.append(copyButton('复制二次创作', result.posts[0]));
+  $('#historyRewriteDraft').replaceChildren(card);
+}
+
+async function generateHistoryRewrite() {
+  if (!currentHistorySource) return;
+  const button = $('#generateHistoryRewriteButton');
+  const language = $('#historyLanguageSelect').value || 'zh';
+  const emotion = $('#historyEmotionSelect').value || 'insightful';
+  setLoading(button, true, '生成中…');
+  $('#historyRewriteResult').classList.remove('hidden');
+  $('#historyRewriteLoading').classList.remove('hidden');
+  $('#historyRewriteStrategy').classList.add('hidden');
+  $('#historyRewriteDraft').classList.add('hidden');
+  showError('');
+  showToast('正在生成二次创作…', 'loading');
+  let generated = false;
+  try {
+    const result = normalizeTweetOptimization(await requestModel(
+      getSettings(),
+      {
+        sourceTweet: currentHistorySource,
+        topReplies: '',
+        feedback: '',
+        style: styleNames[emotion],
+        previousDrafts: [],
+        language: languageNames[language],
+        contentLengthLimit: 100
+      },
+      buildTweetOptimizationPrompt(languageNames[language], 100, styleNames[emotion])
+    ), { contentLengthLimit: 100 });
+    if (!result.posts.length) throw new Error('模型没有返回可用二创文案。');
+    renderHistoryRewrite(result, language);
+    generated = true;
+    showToast('二次创作生成成功', 'success');
+  } catch (error) {
+    showError(error.message);
+    showToast('二次创作生成失败，请查看错误信息', 'error');
+  } finally {
+    $('#historyRewriteLoading').classList.add('hidden');
+    $('#historyRewriteStrategy').classList.toggle('hidden', !generated);
+    $('#historyRewriteDraft').classList.toggle('hidden', !generated);
+    $('#historyRewriteResult').classList.toggle('hidden', !generated);
+    setLoading(button, false, '生成二次创作');
+  }
+}
+
 async function readClipboardText() {
   if (!window.isSecureContext || !navigator.clipboard?.readText) {
     throw new Error('当前 HTTP 页面不允许读取粘贴板，请在输入框中使用系统“粘贴”。');
@@ -190,17 +384,22 @@ async function replacePostFromClipboard() {
   const text = await readClipboardText();
   input.value = text;
   setChoiceValue('languageSelect', detectReplyLanguage(text));
+  await saveTweetRecord(text);
   return text;
 }
 
 async function pastePost() {
+  const button = $('#pastePostButton');
+  setLoading(button, true, '读取中…');
   try {
     await replacePostFromClipboard();
   } catch (error) {
     showError(error.message || '读取粘贴板失败，请在输入框中使用 iPhone 系统“粘贴”。');
+    showToast('读取或保存推文失败', 'error');
+  } finally {
+    setLoading(button, false, '读取粘贴板');
   }
 }
-
 function handleSourceMaterialInput() {
   clearContributionSuggestions();
   setSourceMaterialState('');
@@ -599,6 +798,7 @@ async function rewriteClipboardTweet() {
   setLoading(button, true, '读取中…');
   try {
     const text = await readClipboardText();
+    await saveTweetRecord(text);
     $('#tweetIdeaInput').value = text;
     $('#tweetTopRepliesInput').value = '';
     $('#tweetFeedbackInput').value = '';

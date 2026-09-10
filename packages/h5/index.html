@@ -27,13 +27,14 @@
     <nav class="tabs" aria-label="功能切换">
       <button class="tab-button active" data-tab="reply" type="button" aria-pressed="true">回复建议</button>
       <button class="tab-button" data-tab="optimize" type="button" aria-pressed="false">推文优化</button>
+      <button class="tab-button" data-tab="history" type="button" aria-pressed="false">二次创作 <span id="tweetRecordCountBadge" class="tab-count">0</span></button>
       <button class="tab-button" data-tab="ideas" type="button" aria-pressed="false">原创创作</button>
     </nav>
     <section id="replyTab" data-tab-panel="reply" class="hidden">
       <section class="card">
         <h2>回复建议</h2>
         <p class="helper-text">粘贴 X 帖子正文，选择语言和风格，生成 3 条评论草稿。</p>
-        <div class="input-heading"><span>帖子正文</span><div><button id="pastePostButton" class="text-button" type="button">读取粘贴板</button><button id="clearPostButton" class="text-button" type="button">清空</button></div></div>
+        <div class="input-heading"><span>帖子正文</span><div><button id="pastePostButton" class="text-button" type="button">读取粘贴板</button><button id="openPostRewriteButton" class="text-button" type="button">二次创作</button><button id="clearPostButton" class="text-button" type="button">清空</button></div></div>
         <textarea id="postInput" rows="7" placeholder="把 X 帖子正文粘贴到这里"></textarea>
         <div class="choice-groups">
           <div class="choice-group">
@@ -129,6 +130,16 @@
         <div id="tweetDraftList" class="draft-list"></div>
       </section>
     </section>
+    <section id="historyTab" data-tab-panel="history" class="hidden">
+      <section class="card">
+        <div class="result-heading"><h2>本地推文</h2><span id="tweetRecordCount" class="badge">0 条</span></div>
+        <p class="helper-text">从“回复建议”读取粘贴板后，推文会按设备本地日期保存。每次读取都会新增一条记录，不做去重。</p>
+        <div id="tweetHistoryEmpty" class="history-empty">还没有保存的推文。</div>
+        <div id="tweetHistoryList" class="tweet-history-list"></div>
+      </section>
+    </section>
+
+
 
 
     <section id="ideasTab" data-tab-panel="ideas">
@@ -205,6 +216,23 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <p id="errorMessage" class="error hidden"></p>
   </main>
+  <dialog id="historyRewriteDialog">
+    <form method="dialog" id="historyRewriteForm">
+      <div class="result-heading"><h2>二次创作</h2><button class="text-button" value="cancel" aria-label="关闭二次创作弹窗">关闭</button></div>
+      <div id="historyRewriteSource" class="history-source"></div>
+      <div class="control-grid">
+        <label>创作语言<select id="historyLanguageSelect"><option value="zh" selected>中文</option><option value="en">English</option><option value="vi">Tiếng Việt</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
+        <label>创作情绪<select id="historyEmotionSelect"><option value="insightful" selected>补充观点</option><option value="witty">轻松幽默</option><option value="practical">实操建议</option><option value="friendly">友好支持</option><option value="concise">极简回应</option><option value="professional">专业分析</option><option value="question">提问式</option><option value="contrarian">温和反驳</option><option value="sarcastic">讽刺</option></select></label>
+      </div>
+      <button id="generateHistoryRewriteButton" class="primary-button" type="button">生成二次创作</button>
+      <section id="historyRewriteResult" class="history-rewrite-result hidden">
+        <div id="historyRewriteLoading" class="reply-loading hidden" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在生成二次创作…</span></div>
+        <div id="historyRewriteStrategy" class="analysis-card"></div>
+        <div id="historyRewriteDraft" class="draft-list"></div>
+      </section>
+    </form>
+  </dialog>
+
   <dialog id="settingsDialog">
     <form method="dialog" id="settingsForm">
       <h2>模型设置</h2>

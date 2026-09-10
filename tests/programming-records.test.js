@@ -15,7 +15,7 @@ async function withHub(run, options = {}) {
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   try {
-    await run({ baseUrl });
+    await run({ baseUrl, dataDirectory: directory });
   } finally {
     await hub.close();
     fs.rmSync(directory, { recursive: true, force: true });
@@ -68,6 +68,45 @@ test('编程记录预置分类并保存用户确认的多分类与标签', async
     assert.equal(listed.payload.total, 1);
     assert.equal(listed.payload.page, 1);
     assert.equal(listed.payload.records[0].id, created.payload.record.id);
+  });
+});
+
+test('编程记录默认未消化，并可通过列表记录接口切换消化标记', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const created = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: 'https://example.com/digestible',
+        title: '需要深入学习的资料'
+      })
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.payload.record.isDigested, false);
+
+    const marked = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isDigested: true })
+    });
+    assert.equal(marked.response.status, 200);
+    assert.equal(marked.payload.record.isDigested, true);
+
+    const listed = await request(baseUrl, '/v1/programming-records');
+    assert.equal(listed.payload.records[0].isDigested, true);
+    const detail = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`);
+    assert.equal(detail.payload.record.isDigested, true);
+
+    const unmarked = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isDigested: false })
+    });
+    assert.equal(unmarked.response.status, 200);
+    assert.equal(unmarked.payload.record.isDigested, false);
+
+    const invalid = await request(baseUrl, `/v1/programming-records/${created.payload.record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isDigested: 'yes' })
+    });
+    assert.equal(invalid.response.status, 400);
   });
 });
 
@@ -664,6 +703,189 @@ test('GitHub 公开 API 不可用或资料不完整时安全降级网页 metadat
         headers: { 'content-type': 'text/html' },
         body: '<html><head><title>网页兜底标题</title><meta name="description" content="网页兜底摘要"></head></html>'
       };
+    }
+  });
+});
+
+test('GitHub Stars 导入安全处理凭证、分页、重叠预览与确认时去重', async () => {
+  const token = 'ghp-test-secret-never-return';
+  let storedToken = null;
+  let previewRun = 0;
+  const pageCalls = [];
+  const repository = ({ owner = 'Acme', name, description, language = 'TypeScript', topics = [], stars = 10, privateRepository = false }) => ({
+    private: privateRepository,
+    visibility: privateRepository ? 'private' : 'public',
+    owner: { login: owner, avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4' },
+    name,
+    html_url: `https://github.com/${owner}/${name}`,
+    description,
+    language,
+    license: { name: 'MIT License' },
+    stargazers_count: stars,
+    topics
+  });
+
+  await withHub(async ({ baseUrl, dataDirectory }) => {
+    const beforeConfiguration = await request(baseUrl, '/v1/github-stars-settings');
+    assert.equal(beforeConfiguration.response.status, 200);
+    assert.deepEqual(beforeConfiguration.payload, { settings: { configured: false } });
+
+    const beforeImport = await request(baseUrl, '/v1/programming-records/github-stars/preview', { method: 'POST' });
+    assert.equal(beforeImport.response.status, 400);
+    assert.match(beforeImport.payload.error, /先配置 GitHub Personal Access Token/);
+    assert.equal(pageCalls.length, 0);
+
+    const categories = (await request(baseUrl, '/v1/programming-records/categories')).payload.categories;
+    const frontend = categories.find((category) => category.name === '前端');
+    const existing = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: 'https://github.com/acme/existing',
+        title: '人工保留项目',
+        notes: '不要覆盖',
+        tags: ['人工标签']
+      })
+    });
+    assert.equal(existing.response.status, 201);
+
+    const configured = await request(baseUrl, '/v1/github-stars-settings', {
+      method: 'PUT',
+      body: JSON.stringify({ token })
+    });
+    assert.equal(configured.response.status, 200);
+    assert.deepEqual(configured.payload, { settings: { configured: true } });
+    assert.equal(JSON.stringify(configured.payload).includes(token), false);
+    assert.equal(storedToken, token);
+    assert.equal(fs.readFileSync(path.join(dataDirectory, 'x-assistant.sqlite')).includes(token), false);
+    const backup = await request(baseUrl, '/v1/backups/export', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'backup-password' })
+    });
+    assert.equal(backup.response.status, 201);
+    assert.equal(JSON.stringify(backup.payload).includes(token), false);
+
+    const previewResponse = await request(baseUrl, '/v1/programming-records/github-stars/preview', { method: 'POST' });
+    assert.equal(previewResponse.response.status, 200);
+    const preview = previewResponse.payload.preview;
+    assert.equal(preview.status, 'partial');
+    assert.equal(preview.totalCount, 3);
+    assert.equal(preview.candidateCount, 3);
+    assert.equal(preview.newCount, 2);
+    assert.equal(preview.overlapCount, 1);
+    assert.equal(preview.failedCount, 1);
+    assert.deepEqual(preview.progress, { pagesFetched: 2, processedCount: 4, complete: false });
+    assert.deepEqual(preview.items.map((item) => ({ normalizedUrl: item.normalizedUrl, notes: item.notes })), [
+      { normalizedUrl: 'https://github.com/acme/new-a', notes: '' },
+      { normalizedUrl: 'https://github.com/acme/new-b', notes: '' }
+    ]);
+    assert.equal(JSON.stringify(previewResponse.payload).includes(token), false);
+    assert.deepEqual(pageCalls, [
+      { token, page: 1, perPage: 100 },
+      { token, page: 2, perPage: 100 },
+      { token, page: 3, perPage: 100 }
+    ]);
+
+    const createdBetweenPreviewAndConfirm = await request(baseUrl, '/v1/programming-records', {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://github.com/acme/new-a', title: '并发新增项目' })
+    });
+    assert.equal(createdBetweenPreviewAndConfirm.response.status, 201);
+
+    const confirmed = await request(baseUrl, '/v1/programming-records/github-stars/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        previewId: preview.id,
+        categoryIds: [frontend.id],
+        items: [
+          { normalizedUrl: 'https://github.com/acme/new-a', notes: '并发重复，应该被忽略' },
+          { normalizedUrl: 'https://github.com/acme/new-b', notes: '中文备注：准备研究它的 Rust 实现。' }
+        ]
+      })
+    });
+    assert.equal(confirmed.response.status, 200);
+    assert.deepEqual(confirmed.payload.import, {
+      requestedCount: 2,
+      newCount: 1,
+      overlapCount: 1,
+      failedCount: 0,
+      failures: []
+    });
+
+    const records = (await request(baseUrl, '/v1/programming-records?sort=title')).payload.records;
+    assert.equal(records.length, 3);
+    const preserved = records.find((record) => record.normalizedUrl === 'https://github.com/acme/existing');
+    assert.equal(preserved.title, '人工保留项目');
+    assert.equal(preserved.notes, '不要覆盖');
+    const imported = records.find((record) => record.normalizedUrl === 'https://github.com/acme/new-b');
+    assert.equal(imported.notes, '中文备注:准备研究它的 Rust 实现。');
+    assert.equal(imported.sourceType, 'github');
+    assert.equal(imported.githubOwner, 'Acme');
+    assert.equal(imported.githubRepository, 'New-B');
+    assert.equal(imported.stars, 20);
+    assert.deepEqual(imported.categories.map((category) => category.name), ['前端']);
+    assert.deepEqual([...imported.tags].sort(), ['Acme', 'Rust', 'fast'].sort());
+
+    const repeatedPreviewResponse = await request(baseUrl, '/v1/programming-records/github-stars/preview', { method: 'POST' });
+    assert.equal(repeatedPreviewResponse.response.status, 200);
+    const repeatedPreview = repeatedPreviewResponse.payload.preview;
+    assert.equal(repeatedPreview.status, 'complete');
+    assert.equal(repeatedPreview.newCount, 0);
+    assert.equal(repeatedPreview.overlapCount, 3);
+    assert.deepEqual(repeatedPreview.items, []);
+    assert.equal(JSON.stringify(repeatedPreviewResponse.payload).includes(token), false);
+
+    const repeatedImport = await request(baseUrl, '/v1/programming-records/github-stars/import', {
+      method: 'POST',
+      body: JSON.stringify({ previewId: repeatedPreview.id, categoryIds: [] })
+    });
+    assert.equal(repeatedImport.response.status, 200);
+    assert.deepEqual(repeatedImport.payload.import, {
+      requestedCount: 0,
+      newCount: 0,
+      overlapCount: 0,
+      failedCount: 0,
+      failures: []
+    });
+    assert.equal((await request(baseUrl, '/v1/programming-records')).payload.total, 3);
+
+    const cleared = await request(baseUrl, '/v1/github-stars-settings', { method: 'DELETE' });
+    assert.equal(cleared.response.status, 200);
+    assert.deepEqual(cleared.payload, { settings: { configured: false } });
+    assert.equal(JSON.stringify(cleared.payload).includes(token), false);
+  }, {
+    githubStarsSettings: {
+      get: async () => ({ configured: Boolean(storedToken) }),
+      set: async ({ token: nextToken }) => {
+        storedToken = nextToken;
+        return { configured: true };
+      },
+      clear: async () => {
+        storedToken = null;
+        return { configured: false };
+      },
+      readToken: async () => storedToken
+    },
+    githubStarsPageFetcher: async (nextToken, { page, perPage }) => {
+      pageCalls.push({ token: nextToken, page, perPage });
+      assert.equal(nextToken, token);
+      if (page === 1) {
+        previewRun += 1;
+        return {
+          repositories: [
+            repository({ name: 'Existing', description: '已有项目', stars: 1 }),
+            repository({ name: 'New-A', description: '新项目 A', topics: ['cli'], stars: 11 }),
+            repository({ name: 'Private', description: '私有项目', privateRepository: true })
+          ],
+          hasNext: true
+        };
+      }
+      if (page === 2) {
+        return {
+          repositories: [repository({ name: 'New-B', description: '新项目 B', language: 'Rust', topics: ['fast'], stars: 20 })],
+          hasNext: previewRun === 1
+        };
+      }
+      throw new Error(token);
     }
   });
 });

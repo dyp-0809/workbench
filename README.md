@@ -16,6 +16,11 @@
 - 数据保留策略：X 内容与回复可编辑 180 天、只读 30 天后清理；定位与素材保存至主动删除；待办与到期项保存至主动处理、停用、归档或删除；
 - 支持手动创建密码加密的完整数据备份与受控恢复，备份排除 Keychain API Key。
 
+### 编程记录
+
+- 编程记录支持确认式公开采集、GitHub 仓库来源快照、GitHub Stars 预览导入、重叠统计和人工分类；列表可由用户手动标记资料是否已消化，只有用户确认后才写入本地记录。
+- GitHub Personal Access Token 仅保存于本机 macOS Keychain；Stars 导入不会后台同步、定时抓取或把凭证写入 SQLite、备份和接口响应。
+
 ### Kindle
 
 - 展示 Kindle / Send to Kindle 与 KOReader 支持格式；提供 [KOReader 插件检索](https://github.com/search?q=koplugin&type=repositories&p=1) 和 [官方中文使用说明](https://koreader.rocks/user_guide/zh_Hans.html) 入口；

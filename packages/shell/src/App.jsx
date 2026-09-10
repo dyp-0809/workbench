@@ -70,22 +70,37 @@ const defaultNavigationGroups = [
     { key: 'settings', label: '设置', iconName: 'Settings' }
   ] }
 ];
+function normalizeNavigationGroups(groups) {
+  return groups.flatMap((group) => {
+    const items = Array.isArray(group.items) ? group.items.map((item) => ({ ...item })) : [];
+    if (group.label || items.length === 0) return [{ ...group, items }];
+    return items.map((item) => ({ id: item.key, items: [item] }));
+  });
+}
+function navigationModuleKey(group) {
+  return group.label ? group.id : group.items[0]?.key || group.id;
+}
 function readNavigationGroups() {
   try {
     const saved = JSON.parse(localStorage.getItem(MENU_STORAGE_KEY));
-    if (!Array.isArray(saved)) return defaultNavigationGroups;
-    const groupOrder = new Map(saved.map((item, index) => [item.id, index]));
-    const groups = defaultNavigationGroups.map((group) => {
-      const savedGroup = saved.find((item) => item.id === group.id);
-      const savedItems = savedGroup?.items || [];
-      const mergedItems = group.items.map((item) => ({ ...item, ...savedItems.find((savedItem) => savedItem.key === item.key) }));
-      const itemOrder = new Map(savedItems.map((item, index) => [item.key, index]));
-      mergedItems.sort((left, right) => (itemOrder.get(left.key) ?? Number.MAX_SAFE_INTEGER) - (itemOrder.get(right.key) ?? Number.MAX_SAFE_INTEGER));
-      return { ...group, ...savedGroup, items: mergedItems };
+    if (!Array.isArray(saved)) return normalizeNavigationGroups(defaultNavigationGroups);
+    const savedGroups = new Map(saved.map((group) => [group.id, group]));
+    const savedItems = new Map(saved.flatMap((group) => Array.isArray(group.items) ? group.items : []).map((item) => [item.key, item]));
+    const savedOrder = new Map();
+    let nextOrder = 0;
+    for (const group of saved) {
+      if (group.label) savedOrder.set(group.id, nextOrder++);
+      else for (const item of Array.isArray(group.items) ? group.items : []) savedOrder.set(item.key, nextOrder++);
+    }
+    const groups = defaultNavigationGroups.flatMap((group) => {
+      const savedGroup = savedGroups.get(group.id);
+      const items = group.items.map((item) => ({ ...item, ...(savedItems.get(item.key) || {}) }));
+      if (group.label || savedGroup?.label) return [{ ...group, ...savedGroup, items }];
+      return items.map((item) => ({ id: item.key, items: [item] }));
     });
-    groups.sort((left, right) => (groupOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (groupOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+    groups.sort((left, right) => (savedOrder.get(navigationModuleKey(left)) ?? Number.MAX_SAFE_INTEGER) - (savedOrder.get(navigationModuleKey(right)) ?? Number.MAX_SAFE_INTEGER));
     return groups;
-  } catch { return defaultNavigationGroups; }
+  } catch { return normalizeNavigationGroups(defaultNavigationGroups); }
 }
 function serializableNavigationGroups(groups) {
   return groups.map(({ id, label, iconName, items }) => ({ id, label, iconName, items: items.map(({ key, label: itemLabel, iconName: itemIconName }) => ({ key, label: itemLabel, iconName: itemIconName })) }));
@@ -368,6 +383,7 @@ function AppInner() {
             {page === 'stock-positions' && <StockPositionsPage />}
             {page === 'menstrual-cycle' && <MenstrualCyclePage />}
             {page === 'kindle' && <KindlePage />}
+            {page === 'programming-records' && <ProgrammingRecordsPage />}
           </div>
         )}
         {page === 'settings' && (
@@ -383,7 +399,6 @@ function AppInner() {
                       </NavigationLink>
                     </NavigationItem>
                   ))}
-            {page === 'programming-records' && <ProgrammingRecordsPage />}
                 </NavigationList>
               </Navigation>
             </div>
@@ -620,6 +635,81 @@ function IconPicker({ value, onChange, label }) {
   return <div className="icon-picker"><Button ref={triggerRef} type="button" variant="outline" size="sm" className="icon-picker-trigger" aria-label={label} aria-haspopup="dialog" title={label} onClick={() => setOpen(true)}><CurrentIcon className="size-5" /></Button><Dialog open={open} onOpenChange={(nextOpen) => { if (nextOpen) setOpen(true); else close(); }}><DialogContent className="icon-picker-dialog" closeLabel="关闭图标选择"><DialogHeader className="px-6 pt-6 pe-14"><DialogTitle>{label}</DialogTitle><DialogDescription>搜索或从最近使用的图标中选择，选择后会立即应用。</DialogDescription></DialogHeader><DialogBody className="icon-picker-dialog-body px-6 py-5"><Input ref={searchRef} autoFocus value={query} placeholder="搜索图标名称或别名" aria-label="搜索图标" onChange={(event) => setQuery(event.target.value)} /><Tabs value={scope} onValueChange={setScope} variant="pill" size="sm"><TabsList><TabsTrigger value="recent">最近使用</TabsTrigger><TabsTrigger value="all">全部</TabsTrigger></TabsList></Tabs><ScrollArea className="icon-picker-scroll" orientation="vertical" scrollbarVisibility="auto"><div className="icon-picker-results" role="grid" aria-label="图标结果" onKeyDown={onGridKeyDown}>{results.length ? results.map(([name, Icon], index) => <Button key={name} type="button" variant="ghost" size="icon-sm" role="gridcell" tabIndex={index === activeIndex ? 0 : -1} className={`icon-choice ${name === value ? 'is-selected' : ''} ${index === activeIndex ? 'is-focused' : ''}`} aria-label={name} title={`${name}：${iconAliases[name] || ''}`} ref={(element) => { iconRefs.current[index] = element; }} onFocus={() => setActiveIndex(index)} onClick={() => choose(name)}><Icon className="size-5" /></Button>) : <div className="icon-picker-empty">没有匹配的图标</div>}</div></ScrollArea></DialogBody><DialogFooter className="px-6 pb-6"><span className="text-xs text-foreground-muted">方向键移动，Enter 选择</span><Button variant="outline" onClick={close}>取消</Button></DialogFooter></DialogContent></Dialog></div>;
 }
 
+function NavigationMenuItemEditor({ item, groupIndex, itemIndex, dragged, updateItem, startDrag, dropItem, moveByKeyboard }) {
+  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
+  return (
+    <div
+      className={`menu-item-editor ${dragged?.type === 'item' && dragged.itemKey === item.key ? 'is-dragging' : ''}`}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={() => dropItem(groupIndex, itemIndex)}
+    >
+      <Button type="button" variant="ghost" size="icon-sm" className="drag-handle item-drag-handle" draggable aria-label={`拖动菜单项：${item.label}`} onDragStart={() => startDrag({ type: 'item', groupIndex, itemIndex, itemKey: item.key })} title="拖动排序">⠿</Button>
+      <span className="item-icon-preview"><Icon className="size-5" /></span>
+      <Input className="min-w-0 flex-1" value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} onKeyDown={(event) => moveByKeyboard(event, groupIndex, itemIndex)} />
+      <IconPicker value={item.iconName} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} />
+      <span className="keyboard-hint" aria-label="可使用 Alt 或 Command 加方向键排序">⌥/⌘ ↑↓</span>
+    </div>
+  );
+}
+
+function NavigationGroupEditor({ group, groupIndex, dragged, startDrag, dropGroup, dropItem, moveGroupByKeyboard, moveByKeyboard, updateGroup, updateItem }) {
+  return (
+    <details className={`navigation-group ${dragged?.type === 'group' && dragged.groupIndex === groupIndex ? 'is-dragging' : ''}`} open onDragOver={(event) => event.preventDefault()} onDrop={() => dropGroup(groupIndex)}>
+      <summary className="navigation-group-summary">
+        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动分组：${group.label || '无标题分组'}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => moveGroupByKeyboard(event, groupIndex)} onDragStart={() => startDrag({ type: 'group', groupIndex })} title="拖动排序">⠿</Button>
+        <span className="group-summary-icon">{createElement(menuIconOptions[group.iconName] || LayoutGrid, { className: 'size-4' })}</span>
+        <span className="min-w-0 flex-1 truncate">{group.label || '无标题分组'}</span>
+        <span className="text-xs text-foreground-muted">{group.items.length} 项</span>
+      </summary>
+      <div className="navigation-group-body">
+        <div className="group-fields">
+          <Field>
+            <FieldLabel>分组名称</FieldLabel>
+            <Input value={group.label || ''} placeholder="无标题分组" onChange={(event) => updateGroup(groupIndex, { label: event.target.value })} />
+          </Field>
+          <Field>
+            <FieldLabel>分组图标</FieldLabel>
+            <IconPicker value={group.iconName || 'LayoutGrid'} onChange={(iconName) => updateGroup(groupIndex, { iconName })} label={`${group.label || '分组'}图标`} />
+          </Field>
+        </div>
+        <div className="menu-items-list">
+          {group.items.map((item, itemIndex) => (
+            <NavigationMenuItemEditor key={item.key} item={item} groupIndex={groupIndex} itemIndex={itemIndex} dragged={dragged} updateItem={updateItem} startDrag={startDrag} dropItem={dropItem} moveByKeyboard={moveByKeyboard} />
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function StandaloneMenuEditor({ group, groupIndex, dragged, startDrag, dropGroup, moveGroupByKeyboard, updateItem }) {
+  const item = group.items[0];
+  if (!item) return null;
+  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
+  return (
+    <div className={`navigation-group navigation-standalone ${dragged?.type === 'group' && dragged.groupIndex === groupIndex ? 'is-dragging' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={() => dropGroup(groupIndex)}>
+      <div className="navigation-standalone-summary">
+        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动菜单：${item.label}`} onKeyDown={(event) => moveGroupByKeyboard(event, groupIndex)} onDragStart={() => startDrag({ type: 'group', groupIndex })} title="拖动排序">⠿</Button>
+        <span className="group-summary-icon"><Icon className="size-4" /></span>
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        <span className="text-xs text-foreground-muted">独立菜单</span>
+      </div>
+      <div className="navigation-standalone-body">
+        <div className="standalone-fields">
+          <Field>
+            <FieldLabel>菜单名称</FieldLabel>
+            <Input value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} />
+          </Field>
+          <Field>
+            <FieldLabel>菜单图标</FieldLabel>
+            <IconPicker value={item.iconName || 'LayoutGrid'} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} />
+          </Field>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NavigationSettingsPage({ groups, onChange }) {
   const initialGroups = useRef(cloneNavigationGroups(groups));
   const [dragged, setDragged] = useState(null);
@@ -637,6 +727,12 @@ function NavigationSettingsPage({ groups, onChange }) {
     event.preventDefault();
     moveGroup(groupIndex, event.key === 'ArrowUp' ? -1 : 1);
   };
+  const startDrag = (nextDragged) => setDragged(nextDragged);
+  const dropGroup = (groupIndex) => {
+    if (!dragged || dragged.type !== 'group') return;
+    onChange(reorder(groups, dragged.groupIndex, groupIndex));
+    setDragged(null);
+  };
   const dropItem = (groupIndex, itemIndex) => {
     if (!dragged || dragged.type !== 'item') return;
     const sourceGroup = groups[dragged.groupIndex];
@@ -645,16 +741,22 @@ function NavigationSettingsPage({ groups, onChange }) {
     onChange(groups.map((group, index) => index === groupIndex ? { ...group, items: reorder(group.items, dragged.itemIndex, itemIndex) } : group));
     setDragged(null);
   };
-  const reset = () => onChange(cloneNavigationGroups(defaultNavigationGroups));
+  const reset = () => onChange(normalizeNavigationGroups(defaultNavigationGroups));
   return (
     <div className="navigation-editor">
       <div className="navigation-editor-toolbar">
-        <div><div className="eyebrow">NAVIGATION STUDIO</div><h2 className="m-0 mt-1 text-2xl font-bold">菜单维护</h2><p className="mt-1 text-sm text-foreground-muted">编辑结果会即时反映在左侧导航，并自动保存到当前浏览器。</p></div>
+        <div><div className="eyebrow">NAVIGATION STUDIO</div><h2 className="m-0 mt-1 text-2xl font-bold">菜单维护</h2><p className="mt-1 text-sm text-foreground-muted">编辑结果会即时反映在左侧导航；无子菜单的菜单会作为独立模块，可与分组一起拖动排序，并自动保存到当前浏览器。</p></div>
         <div className="flex flex-wrap items-center gap-2"><span className="autosave-status"><span className="autosave-dot" />已自动保存</span><Button variant="ghost" onClick={() => onChange(cloneNavigationGroups(initialGroups.current))}>撤销本次修改</Button><Button variant="outline" onClick={reset}>恢复默认</Button></div>
       </div>
       <div className="navigation-editor-layout">
         <Card className="navigation-preview-card"><div className="preview-heading"><div><span className="text-xs font-semibold uppercase tracking-widest text-foreground-muted">PREVIEW</span><h3 className="m-0 mt-1 text-lg font-semibold">实时导航预览</h3></div><Badge variant="info">同步中</Badge></div><Navigation aria-label="菜单预览" orientation="vertical" activeLink="dashboard-v2"><div className="preview-nav-inner">{groups.map((group) => { const GroupIcon = menuIconOptions[group.iconName] || LayoutGrid; return <div key={group.id} className="preview-group">{group.label && <div className="preview-group-title"><GroupIcon className="size-4" /><span title={group.label}>{group.label}</span></div>}<NavigationList className={group.label ? 'ps-2' : ''}>{group.items.map((item) => { const Icon = menuIconOptions[item.iconName] || LayoutGrid; return <NavigationItem key={item.key}><NavigationLink href="#" value={item.key} onClick={(event) => event.preventDefault()}><Icon data-icon="start" />{item.label}</NavigationLink></NavigationItem>; })}</NavigationList></div>; })}</div></Navigation></Card>
-        <div className="navigation-edit-list">{groups.map((group, groupIndex) => <details key={group.id} className="navigation-group" open onDragOver={(event) => event.preventDefault()} onDrop={() => { if (dragged?.type === 'group') { onChange(reorder(groups, dragged.groupIndex, groupIndex)); setDragged(null); } }}><summary className="navigation-group-summary" onKeyDown={(event) => moveGroupByKeyboard(event, groupIndex)}><Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动分组：${group.label || '无标题分组'}`} onClick={(event) => event.stopPropagation()} onDragStart={() => setDragged({ type: 'group', groupIndex })} title="拖动排序">⠿</Button><span className="group-summary-icon">{createElement(menuIconOptions[group.iconName] || LayoutGrid, { className: 'size-4' })}</span><span className="min-w-0 flex-1 truncate">{group.label || '无标题分组'}</span><span className="text-xs text-foreground-muted">{group.items.length} 项</span></summary><div className="navigation-group-body"><div className="group-fields"><Field><FieldLabel>分组名称</FieldLabel><Input value={group.label || ''} placeholder="无标题分组" onChange={(event) => updateGroup(groupIndex, { label: event.target.value })} /></Field><Field><FieldLabel>分组图标</FieldLabel><IconPicker value={group.iconName || 'LayoutGrid'} onChange={(iconName) => updateGroup(groupIndex, { iconName })} label={`${group.label || '分组'}图标`} /></Field></div><div className="menu-items-list">{group.items.map((item, itemIndex) => { const Icon = menuIconOptions[item.iconName] || LayoutGrid; return <div key={item.key} className={`menu-item-editor ${dragged?.type === 'item' && dragged.itemKey === item.key ? 'is-dragging' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={() => dropItem(groupIndex, itemIndex)}><Button type="button" variant="ghost" size="icon-sm" className="drag-handle item-drag-handle" draggable aria-label={`拖动菜单项：${item.label}`} onDragStart={() => setDragged({ type: 'item', groupIndex, itemIndex, itemKey: item.key })} title="拖动排序">⠿</Button><span className="item-icon-preview"><Icon className="size-5" /></span><Input className="min-w-0 flex-1" value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} onKeyDown={(event) => moveByKeyboard(event, groupIndex, itemIndex)} /><IconPicker value={item.iconName} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} /><span className="keyboard-hint" aria-label="可使用 Alt 或 Command 加方向键排序">⌥/⌘ ↑↓</span></div>; })}</div></div></details>)}</div>
+        <div className="navigation-edit-list">
+          {groups.map((group, groupIndex) => group.label ? (
+            <NavigationGroupEditor key={group.id} group={group} groupIndex={groupIndex} dragged={dragged} startDrag={startDrag} dropGroup={dropGroup} dropItem={dropItem} moveGroupByKeyboard={moveGroupByKeyboard} moveByKeyboard={moveByKeyboard} updateGroup={updateGroup} updateItem={updateItem} />
+          ) : (
+            <StandaloneMenuEditor key={group.id} group={group} groupIndex={groupIndex} dragged={dragged} startDrag={startDrag} dropGroup={dropGroup} moveGroupByKeyboard={moveGroupByKeyboard} updateItem={updateItem} />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -829,10 +931,6 @@ function DashboardPage({ dashboard, stockPositions = [], onRefresh, onNavigate, 
                 <div className="dashboard-menstrual-history">
                   <span className="text-sm text-foreground-muted">历史经期开始日</span>
                   {menstrualCycles.filter((cycle) => cycle.endDate).length ? <Chart option={menstrualChartOption} height={260} /> : <p className="m-0 mt-2 text-sm text-foreground-muted">完成一次经期记录后，这里会显示历史折线图。</p>}
-                </div>
-                <div className="dashboard-menstrual-records">
-                  <span className="text-sm text-foreground-muted">经期记录</span>
-                  {menstrualCycles.length ? menstrualCycles.slice(0, 8).map((cycle) => <div key={cycle.id} className="dashboard-menstrual-record"><strong>{cycle.startDate}{cycle.endDate ? ` 至 ${cycle.endDate}` : ' 起'}</strong><span>经量：{{ light: '少量', medium: '适中', heavy: '较多' }[cycle.flow] || cycle.flow || '未记录'}</span>{cycle.symptoms && <span>症状：{cycle.symptoms}</span>}{cycle.notes && <span>备注：{cycle.notes}</span>}</div>) : <p className="m-0 mt-2 text-sm text-foreground-muted">暂无周期记录。</p>}
                 </div>
                 {menstrualMoodLogs.length > 0 && <div className="dashboard-menstrual-records"><span className="text-sm text-foreground-muted">情绪记录</span>{menstrualMoodLogs.slice(0, 8).map((log) => <div key={log.id} className="dashboard-menstrual-record"><strong>{log.loggedOn}</strong><span>情绪：{{ 1: '低落', 2: '偏低', 3: '平稳', 4: '愉悦', 5: '很好' }[log.mood] || log.mood || '未记录'}</span>{log.notes && <span>备注：{log.notes}</span>}</div>)}</div>}
               </>

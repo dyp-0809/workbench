@@ -160,4 +160,4 @@ function createGitHubRepositoryCapture({ repositoryFetcher = defaultGitHubReposi
   };
 }
 
-module.exports = { createGitHubRepositoryCapture, parseGitHubRepositoryUrl };
+module.exports = { createGitHubRepositoryCapture, mapGitHubRepository, parseGitHubRepositoryUrl };

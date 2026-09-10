@@ -176,6 +176,12 @@ test('推文二创默认一百字，并仅保留一条个人推文', () => {
   assert.match(prompt, /不得复述、同义改写、拼接或概括/);
   assert.match(prompt, /只生成 1 条推文/);
   assert.match(prompt, /采用“轻松幽默”风格/);
+  assert.match(prompt, /技术、工具、编程、AI、工作方法类内容/);
+  assert.match(prompt, /专业角度/);
+  assert.match(prompt, /持续学习者/);
+  assert.match(prompt, /生活、关系、旅行、情绪和日常观察类内容/);
+  assert.match(prompt, /禁止使用“不是……而是……”/);
+  assert.match(prompt, /输出前请静默自检/);
   assert.match(prompt, /previousDrafts 是用户已拒绝的本轮版本/);
   assert.match(prompt, /valueAdded 要说明相较参考素材新增的具体判断/);
   assert.match(prompt, /translation 必须返回这条推文的中文对照/);

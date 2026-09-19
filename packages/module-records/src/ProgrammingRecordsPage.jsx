@@ -224,7 +224,7 @@ function GitHubStarsImportDialog({ open, onOpenChange, categories, onImported })
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="m-0 text-sm font-medium text-foreground-strong">GitHub Personal Access Token</h3>
-                  <p className="m-0 mt-1 text-xs text-foreground-muted">仅保存于本机 macOS Keychain，不会进入 SQLite、备份或接口响应。</p>
+                  <p className="m-0 mt-1 text-xs text-foreground-muted">保存于本机 SQLite 凭证表，不会进入加密备份或接口响应。</p>
                   <p className="m-0 mt-1 text-xs text-foreground-muted">创建 Fine-grained Token 时选择 Account permissions → Starring → Read-only；不需要仓库写权限。保存后仅在当前窗口保留输入值，关闭窗口后不会从服务端回显。</p>
                 </div>
                 <Badge variant={settings.configured ? 'success' : 'secondary'} size="sm">{settingsLoading ? '读取中' : settings.configured ? '已配置' : '未配置'}</Badge>

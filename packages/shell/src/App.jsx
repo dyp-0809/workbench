@@ -22,23 +22,25 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@appica/ui-
 import { TextAnimate } from '@appica/ui-react/text-animate';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, DialogClose } from '@appica/ui-react/dialog';
 
-import { LayoutGrid, LayoutDashboard, Book, FileText, Database, Settings, Bolt, ChevronRight, CircleCheckFilled, CircleXFilled, Copy, ChartBar, Home, Checklist, Alarm, BrandX, Box, History, Palette, ChartPie, ChartCandle, ChartLine, Target, Wallet, Archive, Books } from '@appica/icons-react';
+import { LayoutGrid, LayoutDashboard, Book, FileText, Database, Settings, Bolt, ChevronRight, CircleCheckFilled, CircleXFilled, Copy, ChartBar, Home, Checklist, Alarm, BrandX, Box, History, Palette, ChartPie, ChartCandle, ChartLine, Target, Wallet, Archive, Books, CalendarEvent } from '@appica/icons-react';
 
 // Core 共享能力
-import { api, reportApiError, API_REQUEST_START_EVENT, API_REQUEST_END_EVENT, API_REQUEST_ERROR_EVENT, formatBytes, Chart, donutOption, Empty, SectionCard, DescriptionList, Metric, NumberRoller, PasswordInput, LoadingButton } from '@personal-workbench/core';
+import { api, copyToClipboard, reportApiError, API_REQUEST_START_EVENT, API_REQUEST_END_EVENT, API_REQUEST_ERROR_EVENT, formatBytes, Chart, donutOption, Empty, SectionCard, DescriptionList, Metric, NumberRoller, PasswordInput, LoadingButton } from '@personal-workbench/core';
 
 // 业务模块
 import { TaskPage } from '@personal-workbench/module-tasks';
 import { ExpiringItemsPage } from '@personal-workbench/module-expiring';
-import { ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, AnalyticsPage } from '@personal-workbench/module-x';
-import { StockPositionsPage, StockEntryPlansPage, StockMarketPage } from '@personal-workbench/module-stock';
+import { ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, AnalyticsPage, DailyTweetsPage } from '@personal-workbench/module-x';
+
 import { MenstrualCyclePage } from '@personal-workbench/module-cycle';
 import { KindlePage } from '@personal-workbench/module-kindle';
 import { ProgrammingRecordsPage } from '@personal-workbench/module-records';
+import { AIDashboardPage, PromptPage, SkillsPage } from '@personal-workbench/module-ai';
+import { StockEntryPlansPage, StockMarketPage, StockPositionsPage, StockEventsPage } from '@personal-workbench/module-stock';
 
 const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const MENU_STORAGE_KEY = 'x-assistant-navigation';
-const menuIconOptions = { LayoutGrid, Home, Checklist, Alarm, ChartCandle, Target, ChartLine, Wallet, BrandX, LayoutDashboard, Book, Archive, Box, History, Palette, ChartPie, Settings, Books };
+const menuIconOptions = { LayoutGrid, Home, Checklist, Alarm, ChartCandle, Target, ChartLine, Wallet, BrandX, LayoutDashboard, Book, FileText, Archive, Box, History, Palette, ChartPie, Settings, Books, CalendarEvent, Bolt };
 const defaultNavigationGroups = [
   { id: 'general', items: [
     { key: 'dashboard-v2', label: '首页', iconName: 'Home' },
@@ -49,13 +51,20 @@ const defaultNavigationGroups = [
   { id: 'stock', label: '股票', iconName: 'ChartCandle', items: [
     { key: 'stock-entry-plans', label: '待开仓股票', iconName: 'Target' },
     { key: 'stock-market', label: '市场', iconName: 'ChartLine' },
+    { key: 'stock-events', label: '重要事件', iconName: 'CalendarEvent' },
     { key: 'stock-positions', label: '仓位管理', iconName: 'Wallet' }
   ] },
   { id: 'programming', label: '编程', iconName: 'Books', items: [
     { key: 'programming-records', label: '记录', iconName: 'Book' }
   ] },
+  { id: 'ai', label: 'AI', iconName: 'Bolt', items: [
+    { key: 'ai-overview', label: 'AI 总览', iconName: 'LayoutDashboard' },
+    { key: 'ai-prompts', label: '提示词', iconName: 'FileText' },
+    { key: 'ai-skills', label: 'Skills', iconName: 'FileText' }
+  ] },
   { id: 'x', label: 'X ASSISTANT', iconName: 'BrandX', items: [
     { key: 'x-overview', label: 'X 概览', iconName: 'LayoutDashboard' },
+    { key: 'daily-tweets', label: '每日推文', iconName: 'BrandX' },
     { key: 'library', label: '内容库', iconName: 'Book' },
     { key: 'archive', label: '内容归档', iconName: 'Archive' },
     { key: 'materials', label: '素材库', iconName: 'Box' },
@@ -63,6 +72,7 @@ const defaultNavigationGroups = [
     { key: 'style', label: '个人风格', iconName: 'Palette' },
     { key: 'analytics-v2', label: '数据统计', iconName: 'ChartPie' }
   ] },
+
   { id: 'health', label: '健康', iconName: 'ChartLine', items: [
     { key: 'menstrual-cycle', label: '经期', iconName: 'ChartLine' }
   ] },
@@ -70,6 +80,7 @@ const defaultNavigationGroups = [
     { key: 'settings', label: '设置', iconName: 'Settings' }
   ] }
 ];
+
 function normalizeNavigationGroups(groups) {
   return groups.flatMap((group) => {
     const items = Array.isArray(group.items) ? group.items.map((item) => ({ ...item })) : [];
@@ -86,6 +97,10 @@ function readNavigationGroups() {
     if (!Array.isArray(saved)) return normalizeNavigationGroups(defaultNavigationGroups);
     const savedGroups = new Map(saved.map((group) => [group.id, group]));
     const savedItems = new Map(saved.flatMap((group) => Array.isArray(group.items) ? group.items : []).map((item) => [item.key, item]));
+    const savedItemOrders = new Map(saved.map((group) => [
+      group.id,
+      new Map((Array.isArray(group.items) ? group.items : []).map((item, index) => [item.key, index]))
+    ]));
     const savedOrder = new Map();
     let nextOrder = 0;
     for (const group of saved) {
@@ -95,6 +110,10 @@ function readNavigationGroups() {
     const groups = defaultNavigationGroups.flatMap((group) => {
       const savedGroup = savedGroups.get(group.id);
       const items = group.items.map((item) => ({ ...item, ...(savedItems.get(item.key) || {}) }));
+      const savedItemOrder = savedItemOrders.get(group.id);
+      if (savedItemOrder) {
+        items.sort((left, right) => (savedItemOrder.get(left.key) ?? Number.MAX_SAFE_INTEGER) - (savedItemOrder.get(right.key) ?? Number.MAX_SAFE_INTEGER));
+      }
       if (group.label || savedGroup?.label) return [{ ...group, ...savedGroup, items }];
       return items.map((item) => ({ id: item.key, items: [item] }));
     });
@@ -113,17 +132,18 @@ const settingsSections = [
   { key: 'pairing', label: '扩展配对', Icon: LayoutGrid },
   { key: 'navigation', label: '菜单维护', Icon: Settings }
 ];
-const X_ASSISTANT_KEYS = ['x-overview', 'library', 'archive', 'materials', 'replies', 'style', 'analytics-v2'];
-const STOCK_KEYS = ['stock-entry-plans', 'stock-market', 'stock-positions'];
+const X_ASSISTANT_KEYS = ['x-overview', 'daily-tweets', 'library', 'archive', 'materials', 'replies', 'style', 'analytics-v2'];
+const STOCK_KEYS = ['stock-entry-plans', 'stock-market', 'stock-events', 'stock-positions'];
 const HEALTH_KEYS = ['menstrual-cycle'];
 const PROGRAMMING_KEYS = ['programming-records'];
-const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS, health: HEALTH_KEYS, programming: PROGRAMMING_KEYS };
+const AI_KEYS = ['ai-overview', 'ai-prompts', 'ai-skills'];
+const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS, health: HEALTH_KEYS, programming: PROGRAMMING_KEYS, ai: AI_KEYS };
 const pageLabels = new Map([
-  ['dashboard-v2', '首页'], ['tasks', '待办事项'], ['expiring', '到期与提醒'], ['x-overview', 'X 概览'], ['library', '内容库'], ['archive', '内容归档'], ['materials', '素材库'],
+  ['dashboard-v2', '首页'], ['tasks', '待办事项'], ['expiring', '到期与提醒'], ['x-overview', 'X 概览'], ['daily-tweets', '每日推文'], ['library', '内容库'], ['archive', '内容归档'], ['materials', '素材库'],
   ['kindle', 'Kindle'],
-  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-positions', '仓位管理'], ['menstrual-cycle', '经期'], ['programming-records', '记录'], ['settings', '设置']
+  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-events', '重要事件'], ['stock-positions', '仓位管理'], ['menstrual-cycle', '经期'], ['programming-records', '记录'], ['ai-overview', 'AI 总览'], ['ai-prompts', '提示词'], ['ai-skills', 'Skills'], ['settings', '设置']
 ]);
-const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'x-overview': '/x-overview', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'programming-records': '/programming/records', 'settings': '/settings' };
+const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'x-overview': '/x-overview', 'daily-tweets': '/daily-tweets', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-events': '/stock/events', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'programming-records': '/programming/records', 'ai-overview': '/ai', 'ai-prompts': '/ai/prompts', 'ai-skills': '/ai/skills', 'settings': '/settings' };
 function pageFromPath(pathname) {
   if (pathname === '/stock/stats') return 'stock-positions';
   const entry = Object.entries(PAGE_PATHS).find(([, path]) => path === pathname);
@@ -143,6 +163,7 @@ function AppInner() {
   }, [themeMode]);
   const toast = useToastManager();
   const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
+  const [dailyTweetsDirty, setDailyTweetsDirty] = useState(false);
   const [navigationTarget, setNavigationTarget] = useState(null);
   const previousPageRef = useRef(page);
   const [openGroups, setOpenGroups] = useState(() => new Set(Object.entries(GROUP_KEYS).filter(([, keys]) => keys.includes(page)).map(([key]) => key)));
@@ -179,6 +200,7 @@ function AppInner() {
       return next;
     });
     const error = (event) => {
+      if (page === 'ai-overview') return;
       const message = event.detail.message;
       toast.add({
         title: '请求失败',
@@ -196,7 +218,7 @@ function AppInner() {
       window.removeEventListener(API_REQUEST_END_EVENT, end);
       window.removeEventListener(API_REQUEST_ERROR_EVENT, error);
     };
-  }, [toast]);
+  }, [toast, page]);
 
   const refresh = async () => {
     try {
@@ -224,6 +246,7 @@ function AppInner() {
     const resolvedPage = nextPage === 'calendar' ? 'dashboard-v2' : nextPage;
     const path = PAGE_PATHS[resolvedPage];
     if (!path) return;
+    if (page === 'daily-tweets' && resolvedPage !== page && dailyTweetsDirty && !window.confirm('提示词有未保存修改，确定离开每日推文吗？')) return;
     if (resolvedPage === 'library' && entityId) setFilters({ topic: '', language: '', status: '' });
     if (window.location.pathname !== path) window.history.pushState(null, '', path);
     setPage(resolvedPage);
@@ -231,12 +254,17 @@ function AppInner() {
   }
   useEffect(() => {
     const onPop = () => {
-      setPage(pageFromPath(window.location.pathname));
+      const nextPage = pageFromPath(window.location.pathname);
+      if (page === 'daily-tweets' && nextPage !== page && dailyTweetsDirty && !window.confirm('提示词有未保存修改，确定离开每日推文吗？')) {
+        window.history.pushState(null, '', PAGE_PATHS[page]);
+        return;
+      }
+      setPage(nextPage);
       setNavigationTarget(null);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, []);
+  }, [dailyTweetsDirty, page]);
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     if (page === 'dashboard-v2' && previousPageRef.current !== page) refresh();
@@ -263,17 +291,17 @@ function AppInner() {
   }
   async function toggleTask(id, status) { await withFeedback(async () => { await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }); await refresh(); }, status === 'completed' ? '待办已完成' : '待办已重新打开'); }
   async function copyPath(text) {
-    try { await navigator.clipboard.writeText(text); toast.add({ title: '已复制', data: { icon: <CircleCheckFilled className="text-success-emphasis" /> } }); }
-    catch { toast.add({ title: '复制失败', data: { icon: <CircleXFilled className="text-error-emphasis" /> } }); }
+    const copied = await copyToClipboard(text);
+    toast.add({ title: copied ? '已复制' : '复制失败', data: { icon: copied ? <CircleCheckFilled className="text-success-emphasis" /> : <CircleXFilled className="text-error-emphasis" /> } });
   }
   async function candidateEvent(id, type) { await withFeedback(async () => { await api(`/content-candidates/${id}/events`, { method: 'POST', body: JSON.stringify({ type }) }); await refresh(); }, type === 'copied' ? '已复制' : '已加入发布计划'); }
   async function candidatePlan(id, plannedPublishTime) { await withFeedback(async () => { await api(`/content-candidates/${id}/publication-plan`, { method: 'PUT', body: JSON.stringify({ plannedPublishTime }) }); await refresh(); }, plannedPublishTime ? `已安排在 ${plannedPublishTime} 发布` : '已移出发布计划'); }
-  async function archiveCandidateCopy(id, content) { await withFeedback(async () => { await navigator.clipboard.writeText(content); await api(`/content-candidates/${id}/archive`, { method: 'POST' }); await refresh(); }, '已复制并移入内容归档'); }
+  async function archiveCandidateCopy(id, content) { await withFeedback(async () => { if (!await copyToClipboard(content)) throw new Error('复制失败，请检查浏览器剪贴板权限。'); await api(`/content-candidates/${id}/archive`, { method: 'POST' }); await refresh(); }, '已复制并移入内容归档'); }
   async function setArchivePerformance(id, performance) { await withFeedback(async () => { await api(`/content-feedback-archive/${id}`, { method: 'PUT', body: JSON.stringify({ performance }) }); await refresh(); }, performance === 'good' ? '已标记流量表现好' : '已标记流量表现一般'); }
   async function addMaterial() { await withFeedback(async () => { await api('/materials', { method: 'POST', body: JSON.stringify(materialInput) }); setMaterialInput({ content: '', topic: '', mayQuoteVerbatim: false }); await refresh(); }, '素材已保存'); }
   async function saveSchedule(weekday, values) { await withFeedback(async () => { await api(`/schedules/${weekday}`, { method: 'PUT', body: JSON.stringify(values) }); await refresh(); }); }
   async function discoverModels() { await withFeedback(async () => { setDiscovering(true); const result = await api('/model-settings/discover', { method: 'POST', body: JSON.stringify(modelInput) }); setAvailableModels(result.models); setModelInput((current) => ({ ...current, model: result.models.includes(current.model) ? current.model : result.models[0] })); }, '模型服务已连通，已拉取可用模型'); setDiscovering(false); }
-  async function saveModel() { await withFeedback(async () => { await api('/model-settings', { method: 'PUT', body: JSON.stringify(modelInput) }); await refresh(); }, '模型配置已保存至 macOS Keychain'); }
+  async function saveModel() { await withFeedback(async () => { await api('/model-settings', { method: 'PUT', body: JSON.stringify(modelInput) }); await refresh(); }, '模型配置已保存至 SQLite'); }
   async function saveProfile() { await withFeedback(async () => { await api('/profile', { method: 'PUT', body: JSON.stringify({ ...profileInput, themes: profileInput.themes.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) }) }); await refresh(); }, '内容定位已保存'); }
   async function exportBackup() { await withFeedback(async () => { const result = await api('/backups/export', { method: 'POST', body: JSON.stringify({ password: backupInput.password }) }); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([result.archive], { type: 'application/json' })); link.download = `x-assistant-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); }, '加密备份已下载'); }
   async function restoreBackup() { await withFeedback(async () => { await api('/backups/restore', { method: 'POST', body: JSON.stringify(backupInput) }); await refresh(); setBackupInput({ password: '', archive: '', confirmation: '' }); }, '备份已恢复；恢复前快照已保留在本机'); }
@@ -353,10 +381,10 @@ function AppInner() {
             <Archive aria-hidden="true" />
           </Button>
         </div>
-        <header className="page-header shrink-0">
+        <header className={`page-header shrink-0 ${page.startsWith('ai-') || page === 'daily-tweets' ? 'page-header-ai' : ''}`}>
           <div>
             <h1>{headerTitle} <time className="dashboard-clock" dateTime={now.toISOString()}><NumberRoller value={now.getHours() * 60 + now.getMinutes()} format={formatClockValue} ariaLabel={now.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })} /></time></h1>
-            <p className="text-foreground-muted">{page === 'dashboard-v2' ? `今天的重点、时间线与下一步行动都在这里${lunarToday ? ` · ${lunarToday}` : ''}` : '内容、素材与互动记录仅保留在本机；模型密钥由 macOS Keychain 管理'}</p>
+            <p className="text-foreground-muted">{page === 'dashboard-v2' ? `今天的重点、时间线与下一步行动都在这里${lunarToday ? ` · ${lunarToday}` : ''}` : page === 'settings' && settingsSection === 'navigation' ? '调整工作台主导航的分组、顺序与图标；变化会自动保存在当前浏览器' : '内容、素材与互动记录仅保留在本机；模型密钥由 SQLite 管理'}</p>
           </div>
           {pendingRequestIds.size > 0 && (
             <div className="page-header-actions flex items-center gap-2">
@@ -366,29 +394,34 @@ function AppInner() {
         </header>
 
         {page !== 'settings' && (
-          <div className="dashboard-scroll min-h-0 flex-1 overflow-y-auto">
+          <div className={`dashboard-scroll min-h-0 flex-1 ${page === 'daily-tweets' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
             {page === 'dashboard-v2' && dashboard && <DashboardPage dashboard={dashboard} stockPositions={stockPositions} onRefresh={refresh} onNavigate={navigate} onTaskToggle={toggleTask} />}
             {page === 'x-overview' && dashboard && <XOverviewPage dashboard={dashboard} candidateEvent={candidateEvent} candidatePlan={candidatePlan} />}
+            {page === 'daily-tweets' && <DailyTweetsPage modelSettings={modelSettings} onNavigate={(target) => { if (target === 'settings') setSettingsSection('model'); navigate(target); }} onDirtyChange={setDailyTweetsDirty} />}
             {page === 'expiring' && <ExpiringItemsPage focusId={navigationTarget?.page === 'expiring' ? navigationTarget.entityId : null} />}
             {page === 'tasks' && <TaskPage focusId={navigationTarget?.page === 'tasks' ? navigationTarget.entityId : null} />}
             {page === 'library' && <LibraryPage topics={topics} filters={filters} setFilters={setFilters} packs={packs} filteredPacks={filteredPacks} candidateArchive={archiveCandidateCopy} candidateEvent={candidateEvent} candidatePlan={candidatePlan} focusId={navigationTarget?.page === 'library' ? navigationTarget.entityId : null} />}
             {page === 'archive' && <ContentArchivePage entries={contentArchive} onPerformance={setArchivePerformance} />}
             {page === 'materials' && <MaterialsPage materials={materials} materialInput={materialInput} setMaterialInput={setMaterialInput} addMaterial={addMaterial} />}
             {page === 'replies' && <RepliesPage replies={replies} />}
+            {page === 'ai-overview' && <AIDashboardPage modelSettings={modelSettings} onNavigate={navigate} />}
+            {page === 'ai-prompts' && <PromptPage />}
+            {page === 'ai-skills' && <SkillsPage />}
             {page === 'style' && style && <StylePage style={style} withFeedback={withFeedback} refresh={refresh} />}
             {page === 'analytics-v2' && <AnalyticsPage packs={packs} tasks={dashboard?.tasks || []} expiringItems={dashboard?.expiringItems || []} />}
 
             {page === 'stock-entry-plans' && <StockEntryPlansPage />}
             {page === 'stock-market' && <StockMarketPage />}
             {page === 'stock-positions' && <StockPositionsPage />}
+            {page === 'stock-events' && <StockEventsPage />}
             {page === 'menstrual-cycle' && <MenstrualCyclePage />}
             {page === 'kindle' && <KindlePage />}
             {page === 'programming-records' && <ProgrammingRecordsPage />}
           </div>
         )}
         {page === 'settings' && (
-          <div className="grid min-h-0 flex-1 grid-cols-24 gap-6">
-            <div className="col-span-24 lg:col-span-4 overflow-y-auto">
+          <div className="settings-layout grid min-h-0 flex-1 grid-cols-24 gap-6">
+            <div className="col-span-24 min-w-0 lg:col-span-4 overflow-y-auto">
               <Navigation aria-label="设置分类" orientation="vertical" activeLink={settingsSection}>
                 <NavigationList>
                   {settingsSections.map(({ key, label, Icon }) => (
@@ -402,7 +435,7 @@ function AppInner() {
                 </NavigationList>
               </Navigation>
             </div>
-            <div className="col-span-24 lg:col-span-20 overflow-y-auto">
+            <div className="col-span-24 min-w-0 lg:col-span-20 overflow-y-auto">
               {settingsSection === 'model' && (
                 <>
                   <SectionCard title="模型连接">
@@ -440,7 +473,7 @@ function AppInner() {
                       </Field>
                       <div className="flex gap-2">
                         <LoadingButton variant="outline" loading={discovering} onClick={discoverModels}>联网测试并拉取模型</LoadingButton>
-                        <Button type="submit" disabled={!modelInput.model}>保存至 macOS Keychain</Button>
+                        <Button type="submit" disabled={!modelInput.model}>保存至 SQLite</Button>
                       </div>
                     </form>
                   </SectionCard>
@@ -505,10 +538,11 @@ function AppInner() {
                       <div className="grid grid-cols-24 gap-4">
                         <div className="col-span-24 xl:col-span-13">
                           <DescriptionList items={[
-                            ['SQLite 文件', <span key="db" className="inline-flex items-center">{dashboard.dataLocations.database}<Copy className="copy-icon" onClick={() => copyPath(dashboard.dataLocations.database)} /></span>],
+                            ['工作台 SQLite', <span key="db" className="inline-flex items-center">{dashboard.dataLocations.database}<Copy className="copy-icon" onClick={() => copyPath(dashboard.dataLocations.database)} /></span>],
+                            ['股票 SQLite', <span key="stock-db" className="inline-flex items-center">{dashboard.dataLocations.stockDatabase}<Copy className="copy-icon" onClick={() => copyPath(dashboard.dataLocations.stockDatabase)} /></span>],
                             ['加密备份目录', <span key="bk" className="inline-flex items-center">{dashboard.dataLocations.backups}<Copy className="copy-icon" onClick={() => copyPath(dashboard.dataLocations.backups)} /></span>],
                             ['工作台前端', dashboard.dataLocations.frontend || '尚未构建'],
-                            ['模型密钥', `${dashboard.dataLocations.keychain} · ${modelSettings.configured ? '已配置' : '未配置'}`],
+                            ['模型密钥', `${dashboard.dataLocations.credentials} · ${modelSettings.configured ? '已配置' : '未配置'}`],
                             ['X 内容与回复', '可编辑 180 天，只读 30 天后清理'],
                             ['待办与到期项', '保留至用户完成、停用或删除']
                           ]} />
@@ -577,9 +611,116 @@ function reorder(list, from, to) {
   next.splice(to, 0, moved);
   return next;
 }
+function setDragTransfer(event, value) {
+  if (!event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', value);
+}
+
+function allowDragOver(event) {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+}
+function NavigationOrderControls({ label, canMoveUp, canMoveDown, onMoveUp, onMoveDown }) {
+  return (
+    <div className="navigation-order-controls" aria-label={label} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="上移" title="上移" disabled={!canMoveUp} onClick={onMoveUp}><LucideIcons.ChevronUp className="size-4" /></Button>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="下移" title="下移" disabled={!canMoveDown} onClick={onMoveDown}><LucideIcons.ChevronDown className="size-4" /></Button>
+    </div>
+  );
+}
+
+function NavigationMenuItemEditor({ item, groupId, groupIndex, itemIndex, itemCount, dragged, updateItem, startDrag, clearDrag, dropItem, moveItem, moveByKeyboard }) {
+  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
+  const isDragging = dragged?.type === 'item' && dragged.itemKey === item.key;
+  return (
+    <div
+      className={`menu-item-editor ${isDragging ? 'is-dragging' : ''}`}
+      inert={isDragging}
+      onDragOver={allowDragOver}
+      onDrop={() => dropItem(groupIndex, itemIndex)}
+    >
+      <Button type="button" variant="ghost" size="icon-sm" className="drag-handle item-drag-handle" draggable aria-label={`拖动菜单项：${item.label}`} onDragStart={(event) => { setDragTransfer(event, item.key); startDrag({ type: 'item', groupId, itemKey: item.key }); }} onDragEnd={clearDrag} title="拖动排序"><LucideIcons.GripVertical className="size-4" /></Button>
+      <span className="item-icon-preview"><Icon className="size-5" /></span>
+      <div className="menu-item-label-field">
+        <span className="menu-item-route">{item.key}</span>
+        <Input className="min-w-0 w-full" name={`navigation-item-${item.key}`} autoComplete="off" value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} onKeyDown={(event) => moveByKeyboard(event, groupIndex, itemIndex)} />
+      </div>
+      <IconPicker value={item.iconName} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} />
+      <NavigationOrderControls label={`调整菜单项 ${item.label} 顺序`} canMoveUp={itemIndex > 0} canMoveDown={itemIndex < itemCount - 1} onMoveUp={() => moveItem(groupIndex, itemIndex, -1)} onMoveDown={() => moveItem(groupIndex, itemIndex, 1)} />
+      <span className="keyboard-hint" aria-label="可使用 Alt 或 Command 加方向键排序">⌥/⌘ ↑↓</span>
+    </div>
+  );
+}
+
+function NavigationGroupEditor({ group, groupIndex, groupCount, dragged, open, onToggle, startDrag, clearDrag, dropGroup, dropItem, moveGroup, moveGroupByKeyboard, moveItem, moveByKeyboard, updateGroup, updateItem }) {
+  const isDragging = dragged?.type === 'group' && dragged.groupId === group.id;
+  return (
+    <details className={`navigation-group ${isDragging ? 'is-dragging' : ''}`} inert={isDragging} open={open} onToggle={(event) => onToggle(event.currentTarget.open)} onDragOver={allowDragOver} onDrop={() => dropGroup(groupIndex)}>
+      <summary className="navigation-group-summary">
+        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动分组：${group.label || '无标题分组'}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); moveGroupByKeyboard(event, groupIndex); }} onDragStart={(event) => { setDragTransfer(event, group.id); startDrag({ type: 'group', groupId: group.id }); }} onDragEnd={clearDrag} title="拖动排序"><LucideIcons.GripVertical className="size-4" /></Button>
+        <span className="group-summary-icon">{createElement(menuIconOptions[group.iconName] || LayoutGrid, { className: 'size-4' })}</span>
+        <span className="min-w-0 flex-1 truncate">{group.label || '无标题分组'}</span>
+        <span className="text-xs text-foreground-muted">{group.items.length} 项</span>
+        <NavigationOrderControls label={`调整分组 ${group.label || '无标题分组'} 顺序`} canMoveUp={groupIndex > 0} canMoveDown={groupIndex < groupCount - 1} onMoveUp={() => moveGroup(groupIndex, -1)} onMoveDown={() => moveGroup(groupIndex, 1)} />
+        <ChevronRight className="navigation-group-chevron size-4 shrink-0 text-foreground-muted" aria-hidden="true" />
+      </summary>
+      <div className="navigation-group-body">
+        <div className="group-fields">
+          <Field>
+            <FieldLabel>分组名称</FieldLabel>
+            <Input name={`navigation-group-${group.id}`} autoComplete="off" value={group.label || ''} placeholder="无标题分组" onChange={(event) => updateGroup(groupIndex, { label: event.target.value })} />
+          </Field>
+          <Field>
+            <FieldLabel>分组图标</FieldLabel>
+            <IconPicker value={group.iconName || 'LayoutGrid'} onChange={(iconName) => updateGroup(groupIndex, { iconName })} label={`${group.label || '分组'}图标`} />
+          </Field>
+        </div>
+        <div className="menu-items-list">
+          {group.items.map((item, itemIndex) => (
+            <NavigationMenuItemEditor key={item.key} item={item} groupId={group.id} groupIndex={groupIndex} itemIndex={itemIndex} itemCount={group.items.length} dragged={dragged} updateItem={updateItem} startDrag={startDrag} clearDrag={clearDrag} dropItem={dropItem} moveItem={moveItem} moveByKeyboard={moveByKeyboard} />
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function StandaloneMenuEditor({ group, groupIndex, groupCount, dragged, open, onToggle, startDrag, clearDrag, dropGroup, moveGroup, moveGroupByKeyboard, updateItem }) {
+  const item = group.items[0];
+  if (!item) return null;
+  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
+  const isDragging = dragged?.type === 'group' && dragged.groupId === group.id;
+  return (
+    <details className={`navigation-group navigation-standalone ${isDragging ? 'is-dragging' : ''}`} inert={isDragging} open={open} onToggle={(event) => onToggle(event.currentTarget.open)} onDragOver={allowDragOver} onDrop={() => dropGroup(groupIndex)}>
+      <summary className="navigation-standalone-summary">
+        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动菜单：${item.label}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { event.stopPropagation(); moveGroupByKeyboard(event, groupIndex); }} onDragStart={(event) => { setDragTransfer(event, group.id); startDrag({ type: 'group', groupId: group.id }); }} onDragEnd={clearDrag} title="拖动排序"><LucideIcons.GripVertical className="size-4" /></Button>
+        <span className="group-summary-icon"><Icon className="size-4" /></span>
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        <span className="text-xs text-foreground-muted">独立菜单</span>
+        <NavigationOrderControls label={`调整菜单 ${item.label} 顺序`} canMoveUp={groupIndex > 0} canMoveDown={groupIndex < groupCount - 1} onMoveUp={() => moveGroup(groupIndex, -1)} onMoveDown={() => moveGroup(groupIndex, 1)} />
+        <ChevronRight className="navigation-group-chevron size-4 shrink-0 text-foreground-muted" aria-hidden="true" />
+      </summary>
+      <div className="navigation-standalone-body">
+        <div className="standalone-fields">
+          <Field>
+            <FieldLabel>菜单名称</FieldLabel>
+            <Input name={`navigation-standalone-${item.key}`} autoComplete="off" value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} />
+          </Field>
+          <Field>
+            <FieldLabel>菜单图标</FieldLabel>
+            <IconPicker value={item.iconName || 'LayoutGrid'} onChange={(iconName) => updateItem(groupIndex, { iconName })} label={`${item.label}图标`} />
+          </Field>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+
 
 const RECENT_ICON_STORAGE_KEY = 'x-assistant-recent-icons';
-const iconAliases = { Home: '首页主页', Checklist: '待办清单任务', Alarm: '提醒闹钟到期', ChartCandle: '股票行情蜡烛图', Target: '目标定位', ChartLine: '趋势数据', Wallet: '钱包仓位', BrandX: '品牌社交', LayoutDashboard: '仪表盘概览', Book: '书籍内容', Archive: '归档', Box: '素材盒子', History: '历史记录', Palette: '风格颜色', ChartPie: '统计分析', Settings: '设置系统' };
+const iconAliases = { Home: '首页主页', Checklist: '待办清单任务', Alarm: '提醒闹钟到期', ChartCandle: '股票行情蜡烛图', Target: '目标定位', ChartLine: '趋势数据', Wallet: '钱包仓位', BrandX: '品牌社交', LayoutDashboard: '仪表盘概览', Book: '书籍内容', Archive: '归档', Box: '素材盒子', History: '历史记录', Palette: '风格颜色', ChartPie: '统计分析', Settings: '设置系统', Books: '书籍目录', CalendarEvent: '重要事件日历' };
 
 function IconPicker({ value, onChange, label }) {
   const triggerRef = useRef(null);
@@ -635,84 +776,36 @@ function IconPicker({ value, onChange, label }) {
   return <div className="icon-picker"><Button ref={triggerRef} type="button" variant="outline" size="sm" className="icon-picker-trigger" aria-label={label} aria-haspopup="dialog" title={label} onClick={() => setOpen(true)}><CurrentIcon className="size-5" /></Button><Dialog open={open} onOpenChange={(nextOpen) => { if (nextOpen) setOpen(true); else close(); }}><DialogContent className="icon-picker-dialog" closeLabel="关闭图标选择"><DialogHeader className="px-6 pt-6 pe-14"><DialogTitle>{label}</DialogTitle><DialogDescription>搜索或从最近使用的图标中选择，选择后会立即应用。</DialogDescription></DialogHeader><DialogBody className="icon-picker-dialog-body px-6 py-5"><Input ref={searchRef} autoFocus value={query} placeholder="搜索图标名称或别名" aria-label="搜索图标" onChange={(event) => setQuery(event.target.value)} /><Tabs value={scope} onValueChange={setScope} variant="pill" size="sm"><TabsList><TabsTrigger value="recent">最近使用</TabsTrigger><TabsTrigger value="all">全部</TabsTrigger></TabsList></Tabs><ScrollArea className="icon-picker-scroll" orientation="vertical" scrollbarVisibility="auto"><div className="icon-picker-results" role="grid" aria-label="图标结果" onKeyDown={onGridKeyDown}>{results.length ? results.map(([name, Icon], index) => <Button key={name} type="button" variant="ghost" size="icon-sm" role="gridcell" tabIndex={index === activeIndex ? 0 : -1} className={`icon-choice ${name === value ? 'is-selected' : ''} ${index === activeIndex ? 'is-focused' : ''}`} aria-label={name} title={`${name}：${iconAliases[name] || ''}`} ref={(element) => { iconRefs.current[index] = element; }} onFocus={() => setActiveIndex(index)} onClick={() => choose(name)}><Icon className="size-5" /></Button>) : <div className="icon-picker-empty">没有匹配的图标</div>}</div></ScrollArea></DialogBody><DialogFooter className="px-6 pb-6"><span className="text-xs text-foreground-muted">方向键移动，Enter 选择</span><Button variant="outline" onClick={close}>取消</Button></DialogFooter></DialogContent></Dialog></div>;
 }
 
-function NavigationMenuItemEditor({ item, groupIndex, itemIndex, dragged, updateItem, startDrag, dropItem, moveByKeyboard }) {
-  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
-  return (
-    <div
-      className={`menu-item-editor ${dragged?.type === 'item' && dragged.itemKey === item.key ? 'is-dragging' : ''}`}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={() => dropItem(groupIndex, itemIndex)}
-    >
-      <Button type="button" variant="ghost" size="icon-sm" className="drag-handle item-drag-handle" draggable aria-label={`拖动菜单项：${item.label}`} onDragStart={() => startDrag({ type: 'item', groupIndex, itemIndex, itemKey: item.key })} title="拖动排序">⠿</Button>
-      <span className="item-icon-preview"><Icon className="size-5" /></span>
-      <Input className="min-w-0 flex-1" value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} onKeyDown={(event) => moveByKeyboard(event, groupIndex, itemIndex)} />
-      <IconPicker value={item.iconName} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} />
-      <span className="keyboard-hint" aria-label="可使用 Alt 或 Command 加方向键排序">⌥/⌘ ↑↓</span>
-    </div>
-  );
-}
 
-function NavigationGroupEditor({ group, groupIndex, dragged, startDrag, dropGroup, dropItem, moveGroupByKeyboard, moveByKeyboard, updateGroup, updateItem }) {
-  return (
-    <details className={`navigation-group ${dragged?.type === 'group' && dragged.groupIndex === groupIndex ? 'is-dragging' : ''}`} open onDragOver={(event) => event.preventDefault()} onDrop={() => dropGroup(groupIndex)}>
-      <summary className="navigation-group-summary">
-        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动分组：${group.label || '无标题分组'}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => moveGroupByKeyboard(event, groupIndex)} onDragStart={() => startDrag({ type: 'group', groupIndex })} title="拖动排序">⠿</Button>
-        <span className="group-summary-icon">{createElement(menuIconOptions[group.iconName] || LayoutGrid, { className: 'size-4' })}</span>
-        <span className="min-w-0 flex-1 truncate">{group.label || '无标题分组'}</span>
-        <span className="text-xs text-foreground-muted">{group.items.length} 项</span>
-      </summary>
-      <div className="navigation-group-body">
-        <div className="group-fields">
-          <Field>
-            <FieldLabel>分组名称</FieldLabel>
-            <Input value={group.label || ''} placeholder="无标题分组" onChange={(event) => updateGroup(groupIndex, { label: event.target.value })} />
-          </Field>
-          <Field>
-            <FieldLabel>分组图标</FieldLabel>
-            <IconPicker value={group.iconName || 'LayoutGrid'} onChange={(iconName) => updateGroup(groupIndex, { iconName })} label={`${group.label || '分组'}图标`} />
-          </Field>
-        </div>
-        <div className="menu-items-list">
-          {group.items.map((item, itemIndex) => (
-            <NavigationMenuItemEditor key={item.key} item={item} groupIndex={groupIndex} itemIndex={itemIndex} dragged={dragged} updateItem={updateItem} startDrag={startDrag} dropItem={dropItem} moveByKeyboard={moveByKeyboard} />
-          ))}
-        </div>
-      </div>
-    </details>
-  );
-}
 
-function StandaloneMenuEditor({ group, groupIndex, dragged, startDrag, dropGroup, moveGroupByKeyboard, updateItem }) {
-  const item = group.items[0];
-  if (!item) return null;
-  const Icon = menuIconOptions[item.iconName] || LayoutGrid;
-  return (
-    <div className={`navigation-group navigation-standalone ${dragged?.type === 'group' && dragged.groupIndex === groupIndex ? 'is-dragging' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={() => dropGroup(groupIndex)}>
-      <div className="navigation-standalone-summary">
-        <Button type="button" variant="ghost" size="icon-sm" className="drag-handle" draggable aria-label={`拖动菜单：${item.label}`} onKeyDown={(event) => moveGroupByKeyboard(event, groupIndex)} onDragStart={() => startDrag({ type: 'group', groupIndex })} title="拖动排序">⠿</Button>
-        <span className="group-summary-icon"><Icon className="size-4" /></span>
-        <span className="min-w-0 flex-1 truncate">{item.label}</span>
-        <span className="text-xs text-foreground-muted">独立菜单</span>
-      </div>
-      <div className="navigation-standalone-body">
-        <div className="standalone-fields">
-          <Field>
-            <FieldLabel>菜单名称</FieldLabel>
-            <Input value={item.label} aria-label={`${item.key} 菜单名`} title={item.label} onChange={(event) => updateItem(groupIndex, item.key, { label: event.target.value })} />
-          </Field>
-          <Field>
-            <FieldLabel>菜单图标</FieldLabel>
-            <IconPicker value={item.iconName || 'LayoutGrid'} onChange={(iconName) => updateItem(groupIndex, item.key, { iconName })} label={`${item.label}图标`} />
-          </Field>
-        </div>
-      </div>
-    </div>
-  );
-}
 
+
+
+
+const NAVIGATION_OPEN_QUERY_KEY = 'navigationOpen';
+
+function readNavigationOpenState(groups) {
+  const defaultOpen = new Set(groups.filter((group) => group.label).map((group) => group.id));
+  if (typeof window === 'undefined') return defaultOpen;
+  const value = new URLSearchParams(window.location.search).get(NAVIGATION_OPEN_QUERY_KEY);
+  if (value === null) return defaultOpen;
+  const validIds = new Set(groups.map((group) => group.id));
+  return new Set(value.split(',').filter((id) => validIds.has(id)));
+}
 function NavigationSettingsPage({ groups, onChange }) {
   const initialGroups = useRef(cloneNavigationGroups(groups));
   const [dragged, setDragged] = useState(null);
+  const [expandedGroups, setExpandedGroups] = useState(() => readNavigationOpenState(groups));
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (expandedGroups.size) url.searchParams.set(NAVIGATION_OPEN_QUERY_KEY, [...expandedGroups].join(','));
+    else url.searchParams.delete(NAVIGATION_OPEN_QUERY_KEY);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [expandedGroups]);
+  const itemCount = groups.reduce((total, group) => total + group.items.length, 0);
+  const groupedCount = groups.filter((group) => group.label).length;
+  const standaloneCount = groups.length - groupedCount;
   const updateGroup = (groupIndex, patch) => onChange(groups.map((group, index) => index === groupIndex ? { ...group, ...patch } : group));
   const updateItem = (groupIndex, itemKey, patch) => onChange(groups.map((group, index) => index === groupIndex ? { ...group, items: group.items.map((item) => item.key === itemKey ? { ...item, ...patch } : item) } : group));
   const moveItem = (groupIndex, itemIndex, direction) => onChange(groups.map((group, index) => index === groupIndex ? { ...group, items: reorder(group.items, itemIndex, itemIndex + direction) } : group));
@@ -728,39 +821,107 @@ function NavigationSettingsPage({ groups, onChange }) {
     moveGroup(groupIndex, event.key === 'ArrowUp' ? -1 : 1);
   };
   const startDrag = (nextDragged) => setDragged(nextDragged);
+  const clearDrag = () => setDragged(null);
   const dropGroup = (groupIndex) => {
-    if (!dragged || dragged.type !== 'group') return;
-    onChange(reorder(groups, dragged.groupIndex, groupIndex));
-    setDragged(null);
+    if (!dragged || dragged.type !== 'group') return clearDrag();
+    const sourceIndex = groups.findIndex((group) => group.id === dragged.groupId);
+    if (sourceIndex < 0 || sourceIndex === groupIndex) return clearDrag();
+    onChange(reorder(groups, sourceIndex, groupIndex));
+    clearDrag();
   };
   const dropItem = (groupIndex, itemIndex) => {
-    if (!dragged || dragged.type !== 'item') return;
-    const sourceGroup = groups[dragged.groupIndex];
-    const sourceItem = sourceGroup?.items[dragged.itemIndex];
-    if (!sourceItem || dragged.groupIndex !== groupIndex) return setDragged(null);
-    onChange(groups.map((group, index) => index === groupIndex ? { ...group, items: reorder(group.items, dragged.itemIndex, itemIndex) } : group));
-    setDragged(null);
+    if (!dragged || dragged.type !== 'item') return clearDrag();
+    const sourceGroupIndex = groups.findIndex((group) => group.id === dragged.groupId);
+    const sourceItemIndex = groups[sourceGroupIndex]?.items.findIndex((item) => item.key === dragged.itemKey) ?? -1;
+    if (sourceGroupIndex !== groupIndex || sourceItemIndex < 0) return clearDrag();
+    onChange(groups.map((group, index) => index === groupIndex ? { ...group, items: reorder(group.items, sourceItemIndex, itemIndex) } : group));
+    clearDrag();
   };
-  const reset = () => onChange(normalizeNavigationGroups(defaultNavigationGroups));
+  const toggleGroup = (group, open) => setExpandedGroups((current) => {
+    const next = new Set(current);
+    if (open) next.add(group.id);
+    else next.delete(group.id);
+    return next;
+  });
+  const expandAll = () => setExpandedGroups(new Set(groups.map((group) => group.id)));
+  const collapseAll = () => setExpandedGroups(new Set());
+  const reset = () => {
+    const nextGroups = normalizeNavigationGroups(defaultNavigationGroups);
+    onChange(nextGroups);
+    setExpandedGroups(new Set(nextGroups.filter((group) => group.label).map((group) => group.id)));
+  };
   return (
     <div className="navigation-editor">
       <div className="navigation-editor-toolbar">
-        <div><div className="eyebrow">NAVIGATION STUDIO</div><h2 className="m-0 mt-1 text-2xl font-bold">菜单维护</h2><p className="mt-1 text-sm text-foreground-muted">编辑结果会即时反映在左侧导航；无子菜单的菜单会作为独立模块，可与分组一起拖动排序，并自动保存到当前浏览器。</p></div>
-        <div className="flex flex-wrap items-center gap-2"><span className="autosave-status"><span className="autosave-dot" />已自动保存</span><Button variant="ghost" onClick={() => onChange(cloneNavigationGroups(initialGroups.current))}>撤销本次修改</Button><Button variant="outline" onClick={reset}>恢复默认</Button></div>
+        <div className="navigation-editor-toolbar-copy">
+          <div className="navigation-editor-heading-row">
+            <h2 className="m-0 text-2xl font-bold">菜单维护</h2>
+            <span className="autosave-status"><span className="autosave-dot" />已自动保存</span>
+          </div>
+          <p className="navigation-editor-description">调整工作台左侧导航的分组、顺序、名称和图标。拖动或使用上下箭头排序，修改会即时同步到左侧导航。</p>
+          <div className="navigation-editor-stats" aria-label="导航结构统计">
+            <span><strong>{groups.length}</strong> 个导航模块</span>
+            <span><strong>{itemCount}</strong> 个菜单项</span>
+            <span><strong>{groupedCount}</strong> 个分组</span>
+            <span><strong>{standaloneCount}</strong> 个独立菜单</span>
+          </div>
+        </div>
+        <div className="navigation-editor-actions">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="ghost" onClick={() => onChange(cloneNavigationGroups(initialGroups.current))}>撤销本次修改</Button>
+            <Button variant="outline" onClick={() => setResetConfirmOpen(true)}>恢复默认</Button>
+          </div>
+          <div className="navigation-editor-view-actions">
+            <Button variant="ghost" size="sm" onClick={expandAll}>展开全部</Button>
+            <Button variant="ghost" size="sm" onClick={collapseAll}>收起全部</Button>
+          </div>
+        </div>
       </div>
       <div className="navigation-editor-layout">
-        <Card className="navigation-preview-card"><div className="preview-heading"><div><span className="text-xs font-semibold uppercase tracking-widest text-foreground-muted">PREVIEW</span><h3 className="m-0 mt-1 text-lg font-semibold">实时导航预览</h3></div><Badge variant="info">同步中</Badge></div><Navigation aria-label="菜单预览" orientation="vertical" activeLink="dashboard-v2"><div className="preview-nav-inner">{groups.map((group) => { const GroupIcon = menuIconOptions[group.iconName] || LayoutGrid; return <div key={group.id} className="preview-group">{group.label && <div className="preview-group-title"><GroupIcon className="size-4" /><span title={group.label}>{group.label}</span></div>}<NavigationList className={group.label ? 'ps-2' : ''}>{group.items.map((item) => { const Icon = menuIconOptions[item.iconName] || LayoutGrid; return <NavigationItem key={item.key}><NavigationLink href="#" value={item.key} onClick={(event) => event.preventDefault()}><Icon data-icon="start" />{item.label}</NavigationLink></NavigationItem>; })}</NavigationList></div>; })}</div></Navigation></Card>
+        <Card className="navigation-preview-card">
+          <div className="preview-heading">
+            <div><h3 className="m-0 text-lg font-semibold">实时导航预览</h3><p className="m-0 mt-1 text-xs text-foreground-muted">左侧导航会随修改立即更新</p></div>
+            <Badge variant="success">已同步</Badge>
+          </div>
+          <Navigation aria-label="菜单预览" orientation="vertical" activeLink="dashboard-v2">
+            <div className="preview-nav-inner">
+              {groups.map((group) => {
+                const GroupIcon = menuIconOptions[group.iconName] || LayoutGrid;
+                return <div key={group.id} className="preview-group">{group.label && <div className="preview-group-title"><GroupIcon className="size-4" /><span title={group.label}>{group.label}</span></div>}<NavigationList className={group.label ? 'ps-2' : ''}>{group.items.map((item) => { const Icon = menuIconOptions[item.iconName] || LayoutGrid; return <NavigationItem key={item.key}><NavigationLink href="#!" value={item.key} className="w-full"><Icon data-icon="start" />{item.label}</NavigationLink></NavigationItem>; })}</NavigationList></div>;
+              })}
+            </div>
+          </Navigation>
+        </Card>
         <div className="navigation-edit-list">
+          <div className="navigation-list-heading">
+            <div><h3 className="m-0 text-base font-semibold">结构与顺序</h3><p className="m-0 mt-1 text-sm text-foreground-muted">每个模块都可以独立排序；展开后编辑名称与图标。</p></div>
+            <span className="navigation-list-count">{groups.length} 个模块</span>
+          </div>
           {groups.map((group, groupIndex) => group.label ? (
-            <NavigationGroupEditor key={group.id} group={group} groupIndex={groupIndex} dragged={dragged} startDrag={startDrag} dropGroup={dropGroup} dropItem={dropItem} moveGroupByKeyboard={moveGroupByKeyboard} moveByKeyboard={moveByKeyboard} updateGroup={updateGroup} updateItem={updateItem} />
+            <NavigationGroupEditor key={group.id} group={group} groupIndex={groupIndex} groupCount={groups.length} dragged={dragged} open={expandedGroups.has(group.id)} onToggle={(open) => toggleGroup(group, open)} startDrag={startDrag} clearDrag={clearDrag} dropGroup={dropGroup} dropItem={dropItem} moveGroup={moveGroup} moveGroupByKeyboard={moveGroupByKeyboard} moveItem={moveItem} moveByKeyboard={moveByKeyboard} updateGroup={updateGroup} updateItem={updateItem} />
           ) : (
-            <StandaloneMenuEditor key={group.id} group={group} groupIndex={groupIndex} dragged={dragged} startDrag={startDrag} dropGroup={dropGroup} moveGroupByKeyboard={moveGroupByKeyboard} updateItem={updateItem} />
+            <StandaloneMenuEditor key={group.id} group={group} groupIndex={groupIndex} groupCount={groups.length} dragged={dragged} open={expandedGroups.has(group.id)} onToggle={(open) => toggleGroup(group, open)} startDrag={startDrag} clearDrag={clearDrag} dropGroup={dropGroup} moveGroup={moveGroup} moveGroupByKeyboard={moveGroupByKeyboard} updateItem={updateItem} />
           ))}
         </div>
       </div>
+      <Dialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
+        <DialogContent className="sm:w-110">
+          <DialogHeader>
+            <DialogTitle>恢复默认菜单？</DialogTitle>
+            <DialogDescription>当前菜单名称、图标和排序会被默认配置覆盖。此操作不会影响业务数据。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="soft">取消</Button>} />
+            <Button variant="destructive" onClick={() => { reset(); setResetConfirmOpen(false); }}>恢复默认</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+
+
+
 
 function App() {
   return (
@@ -961,7 +1122,7 @@ function FinnhubSettingsCard() {
 
   return (
     <SectionCard title="Finnhub 美股行情">
-      <p className="text-sm text-foreground-muted">用于手动刷新仓位中的美股现价。API Key 保存在 macOS Keychain，并仅在本地设置页回显；不会写入备份文件。Finnhub Free 仅限个人、非商业使用。</p>
+      <p className="text-sm text-foreground-muted">用于手动刷新仓位中的美股现价。API Key 保存在本机 SQLite 凭证表，并仅在本地设置页回显；不会写入备份文件。Finnhub Free 仅限个人、非商业使用。</p>
       <form className="mt-4 grid gap-4" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <Field>
           <FieldLabel>Finnhub API Key</FieldLabel>
@@ -970,7 +1131,7 @@ function FinnhubSettingsCard() {
         {result?.connected && <span className="text-sm text-success-emphasis">连接成功：AAPL 当前报价 ${result.quote.currentPrice}</span>}
         <div className="flex flex-wrap items-center gap-2">
           <LoadingButton variant="outline" loading={testing} disabled={!input.apiKey && !settings?.configured} onClick={test}>检测连接</LoadingButton>
-          <LoadingButton loading={saving} disabled={!input.apiKey && !settings?.configured} onClick={save}>保存至 macOS Keychain</LoadingButton>
+          <LoadingButton loading={saving} disabled={!input.apiKey && !settings?.configured} onClick={save}>保存至 SQLite</LoadingButton>
           {settings?.configured && <span className="text-sm text-foreground-muted">已配置，可在仓位管理中刷新美股现价。</span>}
         </div>
       </form>
@@ -982,9 +1143,9 @@ function BarkSettingsCard({ onChanged }) {
   const [settings, setSettings] = useState(null);
   const [input, setInput] = useState({ deviceKey: '', serverUrl: '' });
   const [saving, setSaving] = useState(false);
-  const load = async () => { try { setSettings(await api('/bark-settings')); } catch { /* 全局 Toast 负责展示 API 错误。 */ } };
+  const load = async () => { try { const nextSettings = await api('/bark-settings'); setSettings(nextSettings); setInput({ deviceKey: nextSettings.deviceKey || '', serverUrl: nextSettings.serverUrl || '' }); } catch { /* 全局 Toast 负责展示 API 错误。 */ } };
   useEffect(() => { load(); }, []);
-  const save = async () => { setSaving(true); try { await api('/bark-settings', { method: 'PUT', body: JSON.stringify({ deviceKey: input.deviceKey, serverUrl: input.serverUrl }) }); setInput({ deviceKey: '', serverUrl: '' }); await load(); onChanged?.(); } catch { /* 全局 Toast 负责展示 API 错误。 */ } finally { setSaving(false); } };
+  const save = async () => { setSaving(true); try { await api('/bark-settings', { method: 'PUT', body: JSON.stringify({ deviceKey: input.deviceKey, serverUrl: input.serverUrl }) }); await load(); onChanged?.(); } catch { /* 全局 Toast 负责展示 API 错误。 */ } finally { setSaving(false); } };
   return (
     <SectionCard title="Bark 手机推送" className="section-row">
       <p className="text-sm text-foreground-muted">安装 Bark App 后复制 device key 填入，到期提醒将推送到手机；服务地址留空使用官方 api.day.app。</p>

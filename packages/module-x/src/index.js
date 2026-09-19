@@ -1,7 +1,10 @@
-import { LayoutGrid, LayoutDashboard, Book, FileText, Message, Palette, ChartBar, Archive } from '@appica/icons-react';
+import { LayoutGrid, LayoutDashboard, Book, FileText, Message, Palette, ChartBar, Archive, BrandX } from '@appica/icons-react';
+
 import { ContentTable } from './ContentTable.jsx';
 import { AnalyticsPage } from './AnalyticsPage.jsx';
 import { ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, Preference } from './XPages.jsx';
+import { DailyTweetsPage } from './DailyTweetsPage.jsx';
+
 
 export const xModule = {
   id: 'x',
@@ -9,6 +12,7 @@ export const xModule = {
   icon: LayoutGrid,
   pages: {
     'x-overview': { name: 'X 概览', path: '/x-overview', icon: LayoutDashboard, Component: XOverviewPage },
+    'daily-tweets': { name: '每日推文', path: '/daily-tweets', icon: BrandX, Component: DailyTweetsPage },
     'library': { name: '内容库', path: '/library', icon: Book, Component: LibraryPage },
     'materials': { name: '素材库', path: '/materials', icon: FileText, Component: MaterialsPage },
     'archive': { name: '内容归档', path: '/archive', icon: Archive, Component: ContentArchivePage },
@@ -18,4 +22,4 @@ export const xModule = {
   }
 };
 
-export { ContentTable, AnalyticsPage, ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, Preference };
+export { ContentTable, AnalyticsPage, ContentArchivePage, XOverviewPage, LibraryPage, MaterialsPage, RepliesPage, StylePage, Preference, DailyTweetsPage };

@@ -5,8 +5,8 @@ import { Input } from '@appica/ui-react/input';
 import { Spinner } from '@appica/ui-react/spinner';
 import { Eye, EyeOff } from '@appica/icons-react';
 
-function Empty({ description }) {
-  return <div className="py-10 text-center text-sm text-foreground-muted">{description}</div>;
+function Empty({ description, className = '' }) {
+  return <div className={`text-center text-sm text-foreground-muted ${className || 'py-10'}`}>{description}</div>;
 }
 
 function NumberRoller({ value, format = (number) => String(number), className = '', ariaLabel }) {
@@ -55,11 +55,11 @@ function DescriptionList({ items }) {
   );
 }
 
-function SectionCard({ title, children, className }) {
+function SectionCard({ title, titleAs = 'h3', children, className }) {
   return (
     <Card className={className}>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle render={titleAs === 'h2' ? <h2 /> : undefined}>{title}</CardTitle>
       </CardHeader>
       <div className="px-4 pb-4">{children}</div>
     </Card>

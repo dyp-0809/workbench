@@ -18,10 +18,12 @@ export default defineConfig({
       '@personal-workbench/module-stock': path.resolve(root, '../module-stock/src/index.js'),
       '@personal-workbench/module-cycle': path.resolve(root, '../module-cycle/src/index.js'),
       '@personal-workbench/module-kindle': path.resolve(root, '../module-kindle/src/index.js'),
-      '@personal-workbench/module-records': path.resolve(root, '../module-records/src/index.js')
+      '@personal-workbench/module-records': path.resolve(root, '../module-records/src/index.js'),
+      '@personal-workbench/module-ai': path.resolve(root, '../module-ai/src/index.js')
     }
   },
   server: {
+    host: true,
     port: 5173,
     proxy: {
       '/v1': { target: 'http://127.0.0.1:4318', changeOrigin: true }

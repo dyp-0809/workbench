@@ -6,7 +6,7 @@ import { Pagination, PaginationList, PaginationItem, PaginationLink } from '@app
 import { ChevronLeft, ChevronRight } from '@appica/icons-react';
 import { TimeField } from '@appica/ui-react/time-field';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@appica/ui-react/tooltip';
-import { Empty } from '@personal-workbench/core';
+import { Empty, copyToClipboard } from '@personal-workbench/core';
 
 function ContentTable({ packs, onEvent, onPlan, focusId = null }) {
   const [page, setPage] = useState(1);
@@ -74,7 +74,7 @@ function ContentTable({ packs, onEvent, onPlan, focusId = null }) {
                 <TableCell>{new Date(row.expiresAt).toLocaleDateString()}</TableCell>
                 <TableCell>
                   <div className="flex gap-2">
-                    <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(row.content).then(() => onEvent(row.id, 'copied'))}>复制</Button>
+                    <Button size="sm" variant="outline" onClick={() => void copyToClipboard(row.content).then((copied) => { if (copied) onEvent(row.id, 'copied'); })}>复制</Button>
                     <Button size="sm" disabled={row.status === 'expired'} onClick={() => onPlan(row.id, row.plannedPublishTime ? null : row.suggestedPublishTime || '09:00')}>{row.plannedPublishTime ? '移出计划' : '采用建议'}</Button>
                   </div>
                 </TableCell>

@@ -118,7 +118,10 @@ function ExpiringItemsPage({ focusId = null }) {
   const [editingItem, setEditingItem] = useState(null);
   const [editingInput, setEditingInput] = useState({ name: '', mode: 'once', dueAt: null, intervalValue: 1, intervalUnit: 'day', advanceValue: 0, advanceUnit: 'day', notes: '', category: '' });
   const [editing, setEditing] = useState(false);
+  const [testingId, setTestingId] = useState(null);
+  const [testSentId, setTestSentId] = useState(null);
   const openEdit = (item) => { setEditingInput({ name: item.name, mode: item.mode, dueAt: item.dueAt ? new Date(item.dueAt) : null, intervalValue: item.intervalValue ?? 1, intervalUnit: item.intervalUnit ?? 'day', advanceValue: item.advanceValue, advanceUnit: item.advanceUnit, notes: item.notes || '', category: item.category || '' }); setEditingItem(item); };
+  const test = async (id) => { setTestingId(id); setTestSentId(null); try { await api(`/expiring-items/${id}/test`, { method: 'POST' }); setTestSentId(id); } catch { /* 全局 Toast 负责展示 API 错误。 */ } finally { setTestingId(null); } };
   const saveEdit = async () => { setEditing(true); try { const body = { name: editingInput.name, mode: editingInput.mode, dueAt: editingInput.dueAt ? editingInput.dueAt.toISOString() : undefined, advanceValue: editingInput.advanceValue, advanceUnit: editingInput.advanceUnit, notes: editingInput.notes, category: editingInput.category }; if (editingInput.mode !== 'once') { body.intervalValue = editingInput.intervalValue; body.intervalUnit = editingInput.intervalUnit; } await api(`/expiring-items/${editingItem.id}`, { method: 'PATCH', body: JSON.stringify(body) }); setEditingItem(null); await load(); } finally { setEditing(false); } };
 
   return (
@@ -144,8 +147,10 @@ function ExpiringItemsPage({ focusId = null }) {
                 <TableCell>{item.dueAt ? new Date(item.dueAt).toLocaleString() : '—'}</TableCell>
                 <TableCell><Badge variant={statusTagVariant[item.reminderStatus] || 'outline'}>{statusTagLabel[item.reminderStatus] || item.reminderStatus}</Badge></TableCell>
                 <TableCell>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {item.reminderStatus === 'pending' && <Button size="sm" onClick={() => confirm(item.id)}>确认完成</Button>}
+                    <LoadingButton size="sm" variant="outline" loading={testingId === item.id} onClick={() => test(item.id)}>测试发送</LoadingButton>
+                    {testSentId === item.id && <span className="self-center text-sm text-success-emphasis" role="status">已发送</span>}
                     <Button size="sm" variant="outline" onClick={() => openEdit(item)}>编辑</Button>
                     <Button size="sm" variant="outline" onClick={() => toggle(item)}>{item.enabled ? '停用' : '恢复'}</Button>
                     <AlertDialog>

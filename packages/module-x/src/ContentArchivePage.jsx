@@ -21,7 +21,7 @@ function ContentArchivePage({ entries, onPerformance }) {
           {entries.map((entry) => {
             const performance = performanceLabels[entry.performance];
             return (
-              <Card key={entry.id} className="flex flex-col gap-4 p-4">
+              <Card key={entry.id} className="flex flex-col gap-4 p-4" contentProps={{ className: 'p-4' }}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="whitespace-pre-wrap text-sm leading-6">{entry.content}</p>

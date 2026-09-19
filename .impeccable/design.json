@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-17T11:18:44Z",
+  "title": "Design System: Personal Workbench",
+  "extensions": {
+    "colorMeta": {
+      "system-indigo": {
+        "role": "primary",
+        "displayName": "System Indigo",
+        "canonical": "oklch(62.31% 0.188 259.81)",
+        "tonalRamp": [
+          "oklch(70.86% 0.1652 259.81)",
+          "oklch(62.31% 0.188 259.81)",
+          "oklch(55.07% 0.1846 259.81)"
+        ]
+      },
+      "neutral-canvas": {
+        "role": "neutral",
+        "displayName": "Neutral Canvas",
+        "canonical": "oklch(99% 0 0)",
+        "tonalRamp": [
+          "oklch(99% 0 0)",
+          "oklch(96% 0 0)",
+          "oklch(90% 0 0)"
+        ]
+      },
+      "neutral-ink": {
+        "role": "neutral",
+        "displayName": "Neutral Ink",
+        "canonical": "oklch(20% 0 0)",
+        "tonalRamp": [
+          "oklch(46% 0 0)",
+          "oklch(25% 0 0)",
+          "oklch(20% 0 0)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "System Display",
+        "purpose": "Page identity and major editorial titles."
+      },
+      "label": {
+        "displayName": "Coordinate Label",
+        "purpose": "Module coordinates, workflow stages, and compact metadata."
+      }
+    },
+    "shadows": [
+      {
+        "name": "expanded-structural-lift",
+        "value": "0 10px 28px color-mix(in oklch, var(--foreground) 5%, transparent)",
+        "purpose": "Expanded navigation groups and structural containers."
+      },
+      {
+        "name": "interactive-ambient-lift",
+        "value": "0 10px 30px color-mix(in oklch, var(--foreground) 4%, transparent)",
+        "purpose": "Interactive cards and elevated states."
+      },
+      {
+        "name": "primary-state-lift",
+        "value": "0 10px 24px color-mix(in oklch, var(--primary) 10%, transparent)",
+        "purpose": "Active workflow steps."
+      }
+    ],
+    "motion": [
+      {
+        "name": "micro-state",
+        "value": "180ms ease",
+        "purpose": "Short border, background, color, and shadow state changes."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "none",
+        "purpose": "Disable non-essential transitions and rolling effects when requested."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "desktop-collapse",
+        "value": "900px"
+      },
+      {
+        "name": "compact-rail",
+        "value": "620px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Confident next action using System Indigo.",
+      "html": "<button class=\"ds-btn-primary\">生成推文</button>",
+      "css": ".ds-btn-primary { background: var(--primary); color: var(--primary-foreground); border-radius: var(--radius); padding: 8px 16px; } .ds-btn-primary:hover { background: var(--primary-strong); }"
+    },
+    {
+      "name": "Workflow Stage Rail",
+      "kind": "custom",
+      "refersTo": "workflow-stage-rail",
+      "description": "Numbered or checked stages show progress, current focus, and the next destination.",
+      "html": "<nav class=\"workflow-stage-rail\"><ol><li class=\"is-active\"><button><span>02</span><strong>生成参数</strong><small>当前步骤</small></button></li></ol></nav>",
+      "css": ".workflow-stage-rail button { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; min-height: 56px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--card) 88%, transparent); } .workflow-stage-rail .is-active button { border-color: color-mix(in oklch, var(--primary) 62%, var(--border)); background: var(--primary-subtle); }"
+    },
+    {
+      "name": "Neutral Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Tonal container for one coherent work unit.",
+      "html": "<section class=\"ds-card\"><h2>本机数据</h2><p>SQLite 持久化</p></section>",
+      "css": ".ds-card { background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Personal Operating System",
+    "overview": "An editorial, layered, and opinionated personal operating system for independent work. System Indigo signals action and state against a neutral canvas; tonal surfaces carry hierarchy while tactile controls keep frequent operations confident.",
+    "keyCharacteristics": [
+      "Editorial hierarchy",
+      "System Indigo signals",
+      "Neutral tonal layering",
+      "Tactile confident controls",
+      "Responsive workflow continuity"
+    ],
+    "rules": [
+      {
+        "name": "The Signal Indigo Rule",
+        "body": "Use the primary indigo to communicate action, selection, progress, or focus.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tonal-First Rule",
+        "body": "Surfaces should read correctly before shadows are added.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Hierarchy Before Decoration Rule",
+        "body": "Weight, size, spacing, and labels establish scanability before visual effects.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do use semantic theme tokens.",
+      "Do show current state and next action in the component.",
+      "Do preserve light and dark theme contrast.",
+      "Do stack dense work areas at narrow breakpoints."
+    ],
+    "donts": [
+      "Don't flatten workflows into undifferentiated cards.",
+      "Don't introduce arbitrary radii, shadows, or spacing.",
+      "Don't hide important status in hover-only affordances.",
+      "Don't trade keyboard access or touch targets for density."
+    ]
+  }
+}

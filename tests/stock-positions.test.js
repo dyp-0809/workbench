@@ -52,6 +52,54 @@ test('用户可新增、更新并删除持仓', async () => {
   });
 });
 
+test('卖出持仓会记录成交并更新剩余数量', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const soldUrl = `${baseUrl.replace('/v1/stock-positions', '')}/v1/stock-sold-positions`;
+    const { payload: created } = await createPosition(baseUrl);
+
+    const invalidResponse = await fetch(`${baseUrl}/${created.position.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: 11, sellPrice: 175 })
+    });
+    assert.equal(invalidResponse.status, 400);
+
+    const partialResponse = await fetch(`${baseUrl}/${created.position.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: 4, sellPrice: 175, notes: '分批止盈' })
+    });
+    const partial = await partialResponse.json();
+    assert.equal(partialResponse.status, 201);
+    assert.equal(partial.sale.quantity, 4);
+    assert.equal(partial.sale.sellPrice, 175);
+    assert.equal(partial.sale.realizedPnl, 100);
+    assert.equal(partial.position.quantity, 6);
+
+    const activeAfterPartial = await (await fetch(baseUrl)).json();
+    assert.equal(activeAfterPartial.positions[0].quantity, 6);
+    const soldAfterPartial = await (await fetch(soldUrl)).json();
+    assert.equal(soldAfterPartial.soldPositions.length, 1);
+    assert.equal(soldAfterPartial.soldPositions[0].notes, '分批止盈');
+
+    const finalResponse = await fetch(`${baseUrl}/${created.position.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: 6, sellPrice: 200 })
+    });
+    const final = await finalResponse.json();
+    assert.equal(finalResponse.status, 201);
+    assert.equal(final.position, null);
+    assert.equal(final.sale.realizedPnl, 300);
+
+    const activeAfterFinal = await (await fetch(baseUrl)).json();
+    assert.equal(activeAfterFinal.positions.length, 0);
+    const soldAfterFinal = await (await fetch(soldUrl)).json();
+    assert.equal(soldAfterFinal.soldPositions.length, 2);
+    assert.equal(soldAfterFinal.soldPositions.reduce((sum, item) => sum + item.quantity, 0), 10);
+  });
+});
+
 test('持仓字段校验拒绝无效输入', async () => {
   await withHub(async ({ baseUrl }) => {
     assert.equal((await createPosition(baseUrl, { symbol: '' })).response.status, 400);
@@ -67,12 +115,17 @@ test('持仓支持目标仓位，总资产设置可读写', async () => {
   await withHub(async ({ baseUrl }) => {
     const settingsUrl = `${baseUrl.replace('/v1/stock-positions', '')}/v1/stock-settings`;
 
-    const initial = await (await fetch(settingsUrl)).json();
+    const initialResponse = await fetch(settingsUrl);
+    const initial = await initialResponse.json();
+    assert.equal(initialResponse.status, 200);
     assert.equal(initial.settings.totalAssets, 0);
 
-    const saved = await (await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: 1000000 }) })).json();
+    const savedResponse = await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: 1000000 }) });
+    const saved = await savedResponse.json();
+    assert.equal(savedResponse.status, 200);
     assert.equal(saved.settings.totalAssets, 1000000);
-    assert.equal((await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: -1 }) })).status, 400);
+    const invalidResponse = await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: -1 }) });
+    assert.equal(invalidResponse.status, 400);
 
     const { payload: created } = await createPosition(baseUrl, { targetPercent: 20 });
     assert.equal(created.position.targetPercent, 20);

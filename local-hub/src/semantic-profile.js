@@ -28,7 +28,7 @@ function normalizeSemanticProfile(payload) {
 }
 
 async function extractSemanticProfile(context) {
-  const settings = await readModelSettings();
+  const settings = await readModelSettings(context.credentialStore);
   if (!settings?.apiKey) throw new Error('请先配置模型 API Key 以提炼语义画像。');
   const response = await fetch(requestEndpoint(settings), {
     method: 'POST',

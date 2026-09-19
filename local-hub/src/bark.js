@@ -1,12 +1,16 @@
-const keytar = require('keytar');
-
-const SERVICE = 'com.x-assistant.local-hub';
-const ACCOUNT = 'bark-settings';
+const CREDENTIAL_NAME = 'bark-settings';
 const DEFAULT_SERVER = 'https://api.day.app';
 
-async function readBarkSettings() {
+function requireCredentialStore(credentialStore) {
+  if (!credentialStore || typeof credentialStore.get !== 'function' || typeof credentialStore.set !== 'function') {
+    throw new Error('SQLite 凭证存储不可用。');
+  }
+  return credentialStore;
+}
+
+async function readBarkSettings(credentialStore) {
   try {
-    const value = await keytar.getPassword(SERVICE, ACCOUNT);
+    const value = credentialStore?.get(CREDENTIAL_NAME);
     if (!value) return null;
     const settings = JSON.parse(value);
     return { deviceKey: String(settings.deviceKey || ''), serverUrl: String(settings.serverUrl || DEFAULT_SERVER).replace(/\/+$/, '') };
@@ -15,18 +19,18 @@ async function readBarkSettings() {
   }
 }
 
-async function writeBarkSettings(input) {
+async function writeBarkSettings(input, credentialStore) {
   const deviceKey = String(input.deviceKey || '').trim();
   const serverUrl = String(input.serverUrl || DEFAULT_SERVER).trim().replace(/\/+$/, '') || DEFAULT_SERVER;
   if (!deviceKey) throw new Error('Bark device key 不能为空。');
-  await keytar.setPassword(SERVICE, ACCOUNT, JSON.stringify({ deviceKey, serverUrl }));
+  requireCredentialStore(credentialStore).set(CREDENTIAL_NAME, JSON.stringify({ deviceKey, serverUrl }));
   return { configured: true, serverUrl };
 }
 
-async function getSafeBarkSettings() {
-  const settings = await readBarkSettings();
-  if (!settings?.deviceKey) return { configured: false, serverUrl: settings?.serverUrl || DEFAULT_SERVER };
-  return { configured: true, serverUrl: settings.serverUrl };
+async function getSafeBarkSettings(credentialStore) {
+  const settings = await readBarkSettings(credentialStore);
+  if (!settings?.deviceKey) return { configured: false, deviceKey: '', serverUrl: settings?.serverUrl || DEFAULT_SERVER };
+  return { configured: true, deviceKey: settings.deviceKey, serverUrl: settings.serverUrl };
 }
 
 async function pushBark(settings, title, body) {
@@ -39,8 +43,8 @@ async function pushBark(settings, title, body) {
   if (!response.ok) throw new Error(`Bark 推送失败（${response.status}）。`);
   return true;
 }
-async function pushBarkNotification(title, body) {
-  const settings = await readBarkSettings();
+async function pushBarkNotification(title, body, credentialStore) {
+  const settings = await readBarkSettings(credentialStore);
   if (!settings?.deviceKey) throw new Error('Bark 未配置。');
   return pushBark(settings, title, body);
 }

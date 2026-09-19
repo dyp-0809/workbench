@@ -8,7 +8,7 @@ const { createContentHub } = require('../local-hub/src/content-hub.js');
 
 test('旧日期级到期项迁移为单次模式并保留提前天数', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-expiring-migrate-'));
-  const dbPath = path.join(directory, 'x-assistant.sqlite');
+  const dbPath = path.join(directory, 'workbench.sqlite');
   const oldDb = new Database(dbPath);
   oldDb.exec(`CREATE TABLE expiring_items (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, due_date TEXT NOT NULL,

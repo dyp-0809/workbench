@@ -1,11 +1,15 @@
-const keytar = require('keytar');
+const CREDENTIAL_NAME = 'model-settings';
 
-const SERVICE = 'com.x-assistant.local-hub';
-const ACCOUNT = 'model-settings';
+function requireCredentialStore(credentialStore) {
+  if (!credentialStore || typeof credentialStore.get !== 'function' || typeof credentialStore.set !== 'function') {
+    throw new Error('SQLite 凭证存储不可用。');
+  }
+  return credentialStore;
+}
 
-async function readModelSettings() {
+async function readModelSettings(credentialStore) {
   try {
-    const value = await keytar.getPassword(SERVICE, ACCOUNT);
+    const value = credentialStore?.get(CREDENTIAL_NAME);
     if (!value) return null;
     const settings = JSON.parse(value);
     return {
@@ -43,22 +47,21 @@ async function discoverModels(input) {
   return { endpoint: modelsEndpoint(endpoint), models: uniqueModels };
 }
 
-
-async function writeModelSettings(input) {
+async function writeModelSettings(input, credentialStore) {
   const provider = String(input.provider || 'openai-compatible').trim() || 'openai-compatible';
   const endpoint = String(input.endpoint || '').trim();
   const model = String(input.model || '').trim();
-  const existing = await readModelSettings();
+  const existing = await readModelSettings(credentialStore);
   const apiKey = String(input.apiKey || '').trim() || existing?.apiKey || '';
   if (!endpoint || !model || !apiKey) throw new Error('服务地址、模型和 API Key 均不能为空。');
-  await keytar.setPassword(SERVICE, ACCOUNT, JSON.stringify({ provider, endpoint, model, apiKey }));
+  requireCredentialStore(credentialStore).set(CREDENTIAL_NAME, JSON.stringify({ provider, endpoint, model, apiKey }));
   return { provider, endpoint, model, configured: true };
 }
 
-async function getSafeModelSettings() {
-  const settings = await readModelSettings();
+async function getSafeModelSettings(credentialStore) {
+  const settings = await readModelSettings(credentialStore);
   if (!settings) return { configured: false, provider: 'openai-compatible', endpoint: '', model: '', apiKey: '' };
-  return { configured: Boolean(settings.apiKey), provider: settings.provider, endpoint: settings.endpoint, model: settings.model, apiKey: settings.apiKey };
+  return { provider: settings.provider, endpoint: settings.endpoint, model: settings.model, configured: Boolean(settings.apiKey), apiKey: settings.apiKey };
 }
 
 module.exports = { discoverModels, getSafeModelSettings, readModelSettings, writeModelSettings };

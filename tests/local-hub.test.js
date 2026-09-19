@@ -224,10 +224,10 @@ test('概览返回本机数据路径与各部分占用空间', async () => {
   await withHub(async ({ baseUrl, hub }) => {
     const dashboard = await request(baseUrl, '/v1/dashboard');
     assert.equal(dashboard.response.status, 200);
-    assert.ok(dashboard.payload.dataLocations.database.endsWith('x-assistant.sqlite'));
-    assert.ok(dashboard.payload.dataLocations.backups.endsWith('backups'));
-    assert.ok(dashboard.payload.dataLocations.keychain.includes('Keychain'));
-    assert.equal(dashboard.payload.storageBreakdown.length, 3);
+    assert.ok(dashboard.payload.dataLocations.database.endsWith('workbench.sqlite'));
+    assert.ok(dashboard.payload.dataLocations.stockDatabase.endsWith('stock.sqlite'));
+    assert.equal(dashboard.payload.dataLocations.credentials, 'SQLite credentials table (excluded from backups)');
+    assert.equal(dashboard.payload.storageBreakdown.length, 4);
     assert.ok(dashboard.payload.storageBreakdown.find((item) => item.key === 'sqlite').bytes > 0);
     assert.ok(dashboard.payload.storageBreakdown.find((item) => item.key === 'backups').bytes >= 0);
     assert.equal(dashboard.payload.taskStats.open, 0);

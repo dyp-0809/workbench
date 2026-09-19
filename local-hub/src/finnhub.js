@@ -1,8 +1,12 @@
-const keytar = require('keytar');
-
-const SERVICE = 'com.x-assistant.local-hub';
-const ACCOUNT = 'finnhub-settings';
+const CREDENTIAL_NAME = 'finnhub-settings';
 const FINNHUB_BASE_URL = 'https://finnhub.io/api/v1';
+
+function requireCredentialStore(credentialStore) {
+  if (!credentialStore || typeof credentialStore.get !== 'function' || typeof credentialStore.set !== 'function') {
+    throw new Error('SQLite 凭证存储不可用。');
+  }
+  return credentialStore;
+}
 
 function normalizeSymbol(value) {
   return String(value || '').trim().toUpperCase();
@@ -13,9 +17,9 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-async function readFinnhubSettings() {
+async function readFinnhubSettings(credentialStore) {
   try {
-    const value = await keytar.getPassword(SERVICE, ACCOUNT);
+    const value = credentialStore?.get(CREDENTIAL_NAME);
     if (!value) return null;
     const settings = JSON.parse(value);
     const apiKey = String(settings.apiKey || '').trim();
@@ -25,16 +29,16 @@ async function readFinnhubSettings() {
   }
 }
 
-async function writeFinnhubSettings(input) {
-  const existing = await readFinnhubSettings();
+async function writeFinnhubSettings(input, credentialStore) {
+  const existing = await readFinnhubSettings(credentialStore);
   const apiKey = String(input.apiKey || '').trim() || existing?.apiKey || '';
   if (!apiKey) throw new Error('Finnhub API Key 不能为空。');
-  await keytar.setPassword(SERVICE, ACCOUNT, JSON.stringify({ apiKey }));
+  requireCredentialStore(credentialStore).set(CREDENTIAL_NAME, JSON.stringify({ apiKey }));
   return { configured: true, provider: 'Finnhub' };
 }
 
-async function getSafeFinnhubSettings() {
-  const settings = await readFinnhubSettings();
+async function getSafeFinnhubSettings(credentialStore) {
+  const settings = await readFinnhubSettings(credentialStore);
   return { configured: Boolean(settings?.apiKey), provider: 'Finnhub', apiKey: settings?.apiKey || '' };
 }
 
@@ -46,8 +50,8 @@ async function fetchFinnhubQuote(symbol, settings) {
 
   const url = new URL(`${FINNHUB_BASE_URL}/quote`);
   url.searchParams.set('symbol', normalizedSymbol);
+  url.searchParams.set('token', apiKey);
   const response = await fetch(url, {
-    headers: { 'X-Finnhub-Token': apiKey },
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error(`Finnhub 行情请求失败（${response.status}）。`);
@@ -77,8 +81,8 @@ async function fetchFinnhubValuation(symbol, settings) {
   const url = new URL(`${FINNHUB_BASE_URL}/stock/metric`);
   url.searchParams.set('symbol', normalizedSymbol);
   url.searchParams.set('metric', 'all');
+  url.searchParams.set('token', apiKey);
   const response = await fetch(url, {
-    headers: { 'X-Finnhub-Token': apiKey },
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error(`Finnhub 基础财务指标请求失败（${response.status}）。`);
@@ -93,19 +97,20 @@ async function fetchFinnhubValuation(symbol, settings) {
   };
 }
 
-async function testFinnhubConnection(input) {
-  const existing = await readFinnhubSettings();
+
+async function testFinnhubConnection(input, credentialStore) {
+  const existing = await readFinnhubSettings(credentialStore);
   const apiKey = String(input.apiKey || '').trim() || existing?.apiKey || '';
   const quote = await fetchFinnhubQuote('AAPL', { apiKey });
   return { connected: true, quote };
 }
 
-async function fetchConfiguredFinnhubQuote(symbol) {
-  return fetchFinnhubQuote(symbol, await readFinnhubSettings());
+async function fetchConfiguredFinnhubQuote(symbol, credentialStore) {
+  return fetchFinnhubQuote(symbol, await readFinnhubSettings(credentialStore));
 }
 
-async function fetchConfiguredFinnhubValuation(symbol) {
-  return fetchFinnhubValuation(symbol, await readFinnhubSettings());
+async function fetchConfiguredFinnhubValuation(symbol, credentialStore) {
+  return fetchFinnhubValuation(symbol, await readFinnhubSettings(credentialStore));
 }
 
 module.exports = { fetchConfiguredFinnhubQuote, fetchConfiguredFinnhubValuation, getSafeFinnhubSettings, readFinnhubSettings, testFinnhubConnection, writeFinnhubSettings };

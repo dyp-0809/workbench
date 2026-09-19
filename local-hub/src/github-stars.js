@@ -1,7 +1,4 @@
-const keytar = require('keytar');
-
-const SERVICE = 'com.x-assistant.local-hub';
-const ACCOUNT = 'github-stars-token';
+const CREDENTIAL_NAME = 'github-stars-token';
 const GITHUB_STARS_URL = 'https://api.github.com/user/starred';
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -10,27 +7,35 @@ function normalizeToken(value) {
   return String(value || '').trim();
 }
 
-async function readGitHubStarsToken() {
+function requireCredentialStore(credentialStore) {
+  if (!credentialStore || typeof credentialStore.get !== 'function' || typeof credentialStore.set !== 'function') {
+    throw new Error('SQLite 凭证存储不可用。');
+  }
+  return credentialStore;
+}
+
+async function readGitHubStarsToken(credentialStore) {
   try {
-    return normalizeToken(await keytar.getPassword(SERVICE, ACCOUNT)) || null;
+    return normalizeToken(credentialStore?.get(CREDENTIAL_NAME)) || null;
   } catch {
     return null;
   }
 }
 
-async function getSafeGitHubStarsSettings() {
-  return { configured: Boolean(await readGitHubStarsToken()) };
+async function getSafeGitHubStarsSettings(credentialStore) {
+  return { configured: Boolean(await readGitHubStarsToken(credentialStore)) };
 }
 
-async function writeGitHubStarsToken(input = {}) {
+async function writeGitHubStarsToken(input = {}, credentialStore) {
   const token = normalizeToken(input.token);
   if (!token) throw new Error('GitHub Personal Access Token 不能为空。');
-  await keytar.setPassword(SERVICE, ACCOUNT, token);
+  requireCredentialStore(credentialStore).set(CREDENTIAL_NAME, token);
   return { configured: true };
 }
 
-async function clearGitHubStarsToken() {
-  await keytar.deletePassword(SERVICE, ACCOUNT);
+async function clearGitHubStarsToken(credentialStore) {
+  if (!credentialStore || typeof credentialStore.delete !== 'function') throw new Error('SQLite 凭证存储不可用。');
+  credentialStore.delete(CREDENTIAL_NAME);
   return { configured: false };
 }
 

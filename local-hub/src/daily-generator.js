@@ -86,7 +86,7 @@ function toGenerationError(error) {
 
 
 async function generateDailyCandidates(context) {
-  const settings = await readModelSettings();
+  const settings = await readModelSettings(context.credentialStore);
   if (!settings?.apiKey) throw new Error('请先在本地工作台配置模型 API Key。');
   let response;
   try {

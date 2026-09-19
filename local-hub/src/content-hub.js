@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const os = require('node:os');
 const Database = require('better-sqlite3');
 const { decryptBackup, encryptBackup } = require('./backup');
 const { parseXArchive } = require('./archive-parser');
@@ -14,6 +15,8 @@ const { buildDashboardPromptCandidates, dashboardTimeContext, dashboardDateKey }
 const { createPublicWebCapture } = require('./public-web-capture');
 const { createGitHubRepositoryCapture, mapGitHubRepository, parseGitHubRepositoryUrl } = require('./github-repository-capture');
 const { clearGitHubStarsToken, fetchGitHubStarredPage, getSafeGitHubStarsSettings, readGitHubStarsToken, writeGitHubStarsToken } = require('./github-stars');
+const { createCredentialStore } = require('./credentials');
+const { getMarketEvents: buildMarketEventsResponse } = require('./stock-events');
 const DEFAULT_STOCK_ALERT_RULES = [
   { id: 'attention', level: '注意', uvxyThreshold: 8, marketThreshold: -1, twoDayThreshold: null, message: '波动率明显升温，关注仓位风险', enabled: true },
   { id: 'risk-warning', level: '风险预警', uvxyThreshold: 15, marketThreshold: -2, twoDayThreshold: null, message: '市场风险规避加剧，避免追涨杀跌', enabled: true },
@@ -26,6 +29,8 @@ const MAX_BODY_BYTES = 256 * 1024;
 // X 官方归档 ZIP 含全部媒体，体积普遍超过 512MB；上限取 Node Buffer 单对象上限（2^32-1 字节）以内，
 // 再大 Buffer.concat 会直接抛 RangeError
 const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024 - 1;
+const SKILL_UNCLASSIFIED = '未分类';
+const SKILL_TYPE_KEYS = ['agentType', 'agent_type', 'agent-type', 'agent'];
 const DEFAULT_STOCK_SYMBOLS = [
   { symbol: 'AAPL', name: '苹果', market: 'US' },
   { symbol: 'MSFT', name: '微软', market: 'US' },
@@ -333,6 +338,12 @@ function migrateContentCandidates(db) {
   db.exec('DROP INDEX IF EXISTS content_candidates_unique_planned_time');
 }
 
+function migratePrompts(db) {
+  const columns = db.prepare('PRAGMA table_info(prompts)').all().map((column) => column.name);
+  if (!columns.includes('kind')) db.exec("ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'");
+  db.exec("UPDATE prompts SET kind = 'full' WHERE kind IS NULL OR kind NOT IN ('full', 'short')");
+}
+
 function migrateProgrammingRecords(db) {
   const columns = db.prepare('PRAGMA table_info(programming_records)').all().map((column) => column.name);
   if (!columns.includes('source_snapshot')) db.exec('ALTER TABLE programming_records ADD COLUMN source_snapshot TEXT');
@@ -359,18 +370,142 @@ function migrateGenerationSchedules(db) {
   migrate();
 }
 
-
-function seedStockSymbols(db) {
+function seedStockSymbols(db, schema = 'main') {
+  const tablePrefix = `${schema}.`;
   const timestamp = asIso();
-  const insertDefault = db.prepare(`INSERT OR IGNORE INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+  const insertDefault = db.prepare(`INSERT OR IGNORE INTO ${tablePrefix}stock_symbols(symbol, name, market, is_default, created_at, updated_at)
     VALUES (?, ?, ?, 1, ?, ?)`);
-  const insertExisting = db.prepare(`INSERT OR IGNORE INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
-    SELECT symbol, name, market, 0, created_at, updated_at FROM stock_positions`);
+  const insertExisting = db.prepare(`INSERT OR IGNORE INTO ${tablePrefix}stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+    SELECT symbol, name, market, 0, created_at, updated_at FROM ${tablePrefix}stock_positions`);
   const seed = db.transaction(() => {
     for (const item of DEFAULT_STOCK_SYMBOLS) insertDefault.run(item.symbol, item.name, item.market, timestamp, timestamp);
     insertExisting.run();
   });
   seed();
+}
+
+function normalizeSkillText(value, maxLength) {
+  return String(value ?? '').trim().normalize('NFKC').slice(0, maxLength);
+}
+
+function parseSkillFrontmatter(markdown) {
+  const match = String(markdown).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return {};
+  const fields = {};
+  const lines = match[1].split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const field = lines[index].match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (!field) continue;
+    const [, key, rawValue] = field;
+    if (rawValue === '|' || rawValue === '>') {
+      const values = [];
+      while (index + 1 < lines.length && /^\s+/.test(lines[index + 1])) values.push(lines[++index].trim());
+      fields[key] = values.join(rawValue === '|' ? '\n' : ' ');
+      continue;
+    }
+    fields[key] = rawValue.replace(/^(['"])(.*)\1$/, '$2').trim();
+  }
+  return fields;
+}
+
+function scanSkillDocuments(skillsDirectory, source = {}) {
+  const root = path.resolve(skillsDirectory);
+  const sourceId = normalizeSkillText(source.id, 40);
+  const sourceLabel = normalizeSkillText(source.label, 100) || sourceId;
+  const followSymlinks = Boolean(source.followSymlinks);
+  const documents = [];
+  const warnings = [];
+  const visitedDirectories = new Set();
+  const warningPath = (filePath) => path.relative(root, filePath).split(path.sep).join('/') || '.';
+  const skillId = (filePath) => sourceId ? `${sourceId}:${warningPath(filePath)}` : warningPath(filePath);
+  const displayWarningPath = (filePath) => sourceId ? `${sourceId}:${warningPath(filePath)}` : warningPath(filePath);
+  const warn = (filePath, message) => warnings.push({ path: displayWarningPath(filePath), message });
+  if (!fs.existsSync(root)) {
+    warn(root, 'skills 目录不存在。');
+    return { documents, warnings };
+  }
+  let rootStat;
+  try {
+    rootStat = fs.statSync(root);
+  } catch (error) {
+    warn(root, `skills 目录无法读取：${error.message}`);
+    return { documents, warnings };
+  }
+  if (!rootStat.isDirectory()) {
+    warn(root, 'skills 路径不是目录。');
+    return { documents, warnings };
+  }
+  const readDocument = (filePath) => {
+    try {
+      const stat = fs.statSync(filePath);
+      const content = fs.readFileSync(filePath, 'utf8');
+      const frontmatter = parseSkillFrontmatter(content);
+      const directoryName = path.basename(path.dirname(filePath));
+      const agentType = SKILL_TYPE_KEYS.map((key) => normalizeSkillText(frontmatter[key], 100)).find(Boolean) || SKILL_UNCLASSIFIED;
+      documents.push({
+        id: skillId(filePath),
+        path: filePath,
+        agent: sourceId,
+        agentLabel: sourceLabel,
+        name: normalizeSkillText(frontmatter.name, 200) || directoryName,
+        description: normalizeSkillText(frontmatter.description, 2_000),
+        agentType,
+        content,
+        updatedAt: stat.mtime.toISOString()
+      });
+    } catch (error) {
+      warn(filePath, `文件无法读取：${error.message}`);
+    }
+  };
+  const visit = (directory) => {
+    let resolvedDirectory;
+    try {
+      resolvedDirectory = followSymlinks ? fs.realpathSync(directory) : directory;
+    } catch (error) {
+      warn(directory, `目录无法读取：${error.message}`);
+      return;
+    }
+    if (visitedDirectories.has(resolvedDirectory)) return;
+    visitedDirectories.add(resolvedDirectory);
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      warn(directory, `目录无法读取：${error.message}`);
+      return;
+    }
+    for (const entry of entries) {
+      const filePath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        if (!followSymlinks) {
+          warn(filePath, '跳过符号链接。');
+          continue;
+        }
+        let targetStat;
+        try {
+          targetStat = fs.statSync(filePath);
+        } catch (error) {
+          warn(filePath, `符号链接无法读取：${error.message}`);
+          continue;
+        }
+        if (targetStat.isDirectory()) {
+          visit(filePath);
+        } else if (targetStat.isFile() && entry.name === 'SKILL.md') {
+          readDocument(filePath);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (entry.name === 'SKILL.md') warn(filePath, 'SKILL.md 不是文件。');
+        else visit(filePath);
+        continue;
+      }
+      if (entry.isFile() && entry.name === 'SKILL.md') readDocument(filePath);
+    }
+  };
+  visit(root);
+  documents.sort((left, right) => left.id.localeCompare(right.id));
+  return { documents, warnings };
 }
 
 function initializeSchema(db) {
@@ -406,23 +541,10 @@ function initializeSchema(db) {
       mode TEXT NOT NULL CHECK(mode IN ('automatic', 'fixed', 'reduced', 'ignored')),
       updated_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS stock_alert_rules (
-      id TEXT PRIMARY KEY,
-      payload TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS credentials (
+      name TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS stock_alert_snapshots (
-      symbol TEXT NOT NULL,
-      trading_date TEXT NOT NULL,
-      change_percent REAL,
-      captured_at TEXT NOT NULL,
-      PRIMARY KEY(symbol, trading_date)
-    );
-    CREATE TABLE IF NOT EXISTS stock_alert_deliveries (
-      rule_id TEXT NOT NULL,
-      trading_date TEXT NOT NULL,
-      pushed_at TEXT NOT NULL,
-      PRIMARY KEY(rule_id, trading_date)
     );
     CREATE TABLE IF NOT EXISTS extension_tokens (
       token_hash TEXT PRIMARY KEY,
@@ -438,6 +560,25 @@ function initializeSchema(db) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       archived_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS prompts (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'full' CHECK(kind IN ('full', 'short')),
+      title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS prompts_updated
+      ON prompts(updated_at DESC);
+    CREATE TABLE IF NOT EXISTS skill_notes (
+      skill_id TEXT PRIMARY KEY,
+      note TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS personal_tasks (
       id TEXT PRIMARY KEY,
@@ -553,50 +694,6 @@ function initializeSchema(db) {
       sample_tweets TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS stock_positions (
-      id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      name TEXT NOT NULL,
-      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
-      quantity REAL NOT NULL,
-      cost_price REAL NOT NULL,
-      current_price REAL NOT NULL,
-      notes TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      target_percent REAL,
-      price_updated_at TEXT
-    );
-    CREATE TABLE IF NOT EXISTS stock_entry_plans (
-      id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      name TEXT NOT NULL,
-      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
-      entry_price REAL NOT NULL,
-      target_percent REAL,
-      notes TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      current_price REAL,
-      trailing_pe REAL,
-      forward_pe REAL,
-      market_status TEXT,
-      market_updated_at TEXT,
-      market_error TEXT
-    );
-    CREATE TABLE IF NOT EXISTS stock_settings (
-      id TEXT PRIMARY KEY,
-      total_assets REAL NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS stock_symbols (
-      symbol TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
-      is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS menstrual_cycles (
       id TEXT PRIMARY KEY,
       start_date TEXT NOT NULL,
@@ -668,33 +765,223 @@ function initializeSchema(db) {
       ON programming_record_tag_links(tag_id, record_id);
   `);
   migrateExpiringItems(db);
-  migrateStockPositions(db);
   migrateGenerationSchedules(db);
-  migrateStockEntryPlans(db);
-  migrateContentCandidates(db);
+  migratePrompts(db);
   migrateProgrammingRecords(db);
   migrateProgrammingRecordTags(db);
-  seedStockSymbols(db);
   seedProgrammingRecordCategories(db);
 }
+function migrateLegacyDataDirectory(dataDirectory, legacyDataDirectory) {
+  if (dataDirectory === legacyDataDirectory) return;
+  const legacyDatabasePath = path.join(legacyDataDirectory, 'x-assistant.sqlite');
+  const databasePath = path.join(dataDirectory, 'workbench.sqlite');
+  const movedLegacyDatabasePath = path.join(dataDirectory, 'x-assistant.sqlite');
+  const legacyArchivePath = path.join(dataDirectory, 'workbench.sqlite.legacy');
+  const oldLegacyArchivePath = path.join(dataDirectory, 'x-assistant.sqlite.legacy');
+  if (fs.existsSync(legacyDataDirectory)) {
+    if (!fs.existsSync(dataDirectory)) fs.renameSync(legacyDataDirectory, dataDirectory);
+    if (!fs.existsSync(databasePath)) {
+      if (fs.existsSync(movedLegacyDatabasePath)) fs.renameSync(movedLegacyDatabasePath, databasePath);
+      else if (fs.existsSync(legacyDatabasePath)) fs.copyFileSync(legacyDatabasePath, databasePath);
+    }
+    const legacyBackups = path.join(legacyDataDirectory, 'backups');
+    const backups = path.join(dataDirectory, 'backups');
+    if (!fs.existsSync(backups) && fs.existsSync(legacyBackups)) fs.cpSync(legacyBackups, backups, { recursive: true });
+  }
+  if (fs.existsSync(movedLegacyDatabasePath) && fs.existsSync(databasePath) && !fs.existsSync(legacyArchivePath)) {
+    fs.renameSync(movedLegacyDatabasePath, legacyArchivePath);
+  } else if (fs.existsSync(oldLegacyArchivePath) && !fs.existsSync(legacyArchivePath)) {
+    fs.renameSync(oldLegacyArchivePath, legacyArchivePath);
+  }
+}
+
+function createDataDirectories(options) {
+  const homeDirectory = process.env.HOME || process.cwd();
+  const customDataDirectory = Boolean(options.dataDirectory);
+  const dataDirectory = options.dataDirectory || path.join(homeDirectory, 'Library', 'Application Support', 'workbench');
+  if (!customDataDirectory) migrateLegacyDataDirectory(dataDirectory, path.join(homeDirectory, 'Library', 'Application Support', 'X Assistant'));
+  return dataDirectory;
+}
+const STOCK_TABLES = ['stock_positions', 'stock_sold_positions', 'stock_entry_plans', 'stock_settings', 'stock_symbols', 'stock_alert_rules', 'stock_alert_snapshots', 'stock_alert_deliveries'];
+const STOCK_TABLE_COLUMNS = {
+  stock_positions: 'id, symbol, name, market, quantity, cost_price, current_price, notes, created_at, updated_at, target_percent, price_updated_at, trailing_pe, forward_pe, market_error',
+  stock_sold_positions: 'id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at',
+  stock_entry_plans: 'id, symbol, name, market, entry_price, target_percent, notes, created_at, updated_at, current_price, trailing_pe, forward_pe, market_status, market_updated_at, market_error',
+  stock_settings: 'id, total_assets, updated_at',
+  stock_symbols: 'symbol, name, market, is_default, created_at, updated_at',
+  stock_alert_rules: 'id, payload, updated_at',
+  stock_alert_snapshots: 'symbol, trading_date, change_percent, captured_at',
+  stock_alert_deliveries: 'rule_id, trading_date, pushed_at'
+};
+
+function hasTable(db, schema, table) {
+  return Boolean(db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`).get(table));
+}
+
+function initializeStockDatabase(db, stockDatabasePath) {
+  const legacyTables = STOCK_TABLES.filter((table) => hasTable(db, 'main', table));
+  if (legacyTables.includes('stock_positions')) migrateStockPositions(db);
+  if (legacyTables.includes('stock_entry_plans')) migrateStockEntryPlans(db);
+
+  db.prepare('ATTACH DATABASE ? AS stock').run(stockDatabasePath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stock.stock_positions (
+      id TEXT PRIMARY KEY, symbol TEXT NOT NULL, name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')), quantity REAL NOT NULL,
+      cost_price REAL NOT NULL, current_price REAL NOT NULL, notes TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, target_percent REAL,
+      price_updated_at TEXT, trailing_pe REAL, forward_pe REAL, market_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_sold_positions (
+      id TEXT PRIMARY KEY, position_id TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')), quantity REAL NOT NULL,
+      cost_price REAL NOT NULL, sell_price REAL NOT NULL, realized_pnl REAL NOT NULL,
+      sold_at TEXT NOT NULL, notes TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_entry_plans (
+      id TEXT PRIMARY KEY, symbol TEXT NOT NULL, name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')), entry_price REAL NOT NULL,
+      target_percent REAL, notes TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      current_price REAL, trailing_pe REAL, forward_pe REAL, market_status TEXT,
+      market_updated_at TEXT, market_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_settings (
+      id TEXT PRIMARY KEY, total_assets REAL NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_symbols (
+      symbol TEXT PRIMARY KEY, name TEXT NOT NULL,
+      market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')),
+      is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_alert_rules (
+      id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_alert_snapshots (
+      symbol TEXT NOT NULL, trading_date TEXT NOT NULL, change_percent REAL,
+      captured_at TEXT NOT NULL, PRIMARY KEY(symbol, trading_date)
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_alert_deliveries (
+      rule_id TEXT NOT NULL, trading_date TEXT NOT NULL, pushed_at TEXT NOT NULL,
+      PRIMARY KEY(rule_id, trading_date)
+    );
+  `);
+
+  const migrate = db.transaction(() => {
+    for (const table of legacyTables) {
+      const columns = STOCK_TABLE_COLUMNS[table];
+      db.exec(`INSERT OR IGNORE INTO stock.${table} (${columns}) SELECT ${columns} FROM main.${table}`);
+    }
+    for (const table of legacyTables) db.exec(`DROP TABLE main.${table}`);
+  });
+  migrate();
+  seedStockSymbols(db, 'stock');
+}
+
+const LEGACY_ARCHIVE_RESTORED_MIGRATION = 'legacy-workbench-archive-restored';
+const RECOVERY_SEED_TABLES = new Set(['schema_migrations', 'weekly_schedules', 'programming_record_categories', 'generation_runs']);
+
+function quoteSqlIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+function databaseTableNames(db, schema) {
+  return db.prepare(`SELECT name FROM ${schema}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all().map(({ name }) => name);
+}
+
+function databaseTableColumns(db, schema, table) {
+  return db.prepare(`PRAGMA ${schema}.table_info(${quoteSqlIdentifier(table)})`).all();
+}
+
+function restoreLegacyArchiveData(db, legacyArchivePath, now) {
+  if (!fs.existsSync(legacyArchivePath) || db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(LEGACY_ARCHIVE_RESTORED_MIGRATION)) return;
+  db.prepare('ATTACH DATABASE ? AS legacy').run(legacyArchivePath);
+  const targetMainTables = new Set(databaseTableNames(db, 'main'));
+  const legacyTables = new Set(databaseTableNames(db, 'legacy'));
+  const hasCurrentUserData = [...targetMainTables]
+    .filter((table) => !RECOVERY_SEED_TABLES.has(table) && !STOCK_TABLES.includes(table))
+    .some((table) => db.prepare(`SELECT 1 FROM main.${quoteSqlIdentifier(table)} LIMIT 1`).get())
+    || STOCK_TABLES.some((table) => hasTable(db, 'stock', table) && !['stock_symbols', 'stock_alert_rules'].includes(table)
+      && db.prepare(`SELECT 1 FROM stock.${quoteSqlIdentifier(table)} LIMIT 1`).get());
+  const conflictMode = hasCurrentUserData ? 'IGNORE' : 'REPLACE';
+  const copyTable = (targetSchema, sourceSchema, table) => {
+    if (!legacyTables.has(table) || !hasTable(db, targetSchema, table)) return;
+    const sourceColumns = new Set(databaseTableColumns(db, sourceSchema, table).map(({ name }) => name));
+    const targetColumns = databaseTableColumns(db, targetSchema, table);
+    const columns = targetColumns.filter(({ name }) => sourceColumns.has(name)).map(({ name }) => name);
+    const missingRequiredColumn = targetColumns.some(({ name, notnull, dflt_value, pk }) => notnull && !pk && dflt_value === null && !sourceColumns.has(name));
+    if (!columns.length || missingRequiredColumn) return;
+    const columnList = columns.map(quoteSqlIdentifier).join(', ');
+    db.exec(`INSERT OR ${conflictMode} INTO ${targetSchema}.${quoteSqlIdentifier(table)} (${columnList}) SELECT ${columnList} FROM ${sourceSchema}.${quoteSqlIdentifier(table)}`);
+  };
+  const foreignKeysEnabled = Boolean(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  db.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    const restore = db.transaction(() => {
+      for (const table of legacyTables) {
+        if (STOCK_TABLES.includes(table) || table === 'schema_migrations') continue;
+        copyTable('main', 'legacy', table);
+      }
+      for (const table of STOCK_TABLES) copyTable('stock', 'legacy', table);
+      db.prepare('INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES (?, ?)').run(LEGACY_ARCHIVE_RESTORED_MIGRATION, now().toISOString());
+    });
+    restore();
+  } finally {
+    if (foreignKeysEnabled) db.exec('PRAGMA foreign_keys = ON;');
+    db.exec('DETACH DATABASE legacy');
+  }
+}
+
 function createContentHub(options = {}) {
   const now = options.now || (() => new Date());
-  const dataDirectory = options.dataDirectory || path.join(process.env.HOME || process.cwd(), 'Library', 'Application Support', 'X Assistant');
+  const dataDirectory = createDataDirectories(options);
   const staticDirectory = options.staticDirectory ? path.resolve(options.staticDirectory) : null;
+  const skillsDirectory = options.skillsDirectory ? path.resolve(options.skillsDirectory) : path.join(os.homedir(), '.agents', 'skills');
+  const configuredSkillSources = Array.isArray(options.skillSources)
+    ? options.skillSources.filter((source) => source && source.directory)
+    : [];
+  const skillSources = (configuredSkillSources.length ? configuredSkillSources : [{ directory: skillsDirectory }])
+    .map((source) => ({ ...source, directory: path.resolve(source.directory) }));
   const generator = options.generator;
-  const modelSettings = options.modelSettings;
+  const tweetGenerator = options.tweetGenerator;
+
   const semanticExtractor = options.semanticExtractor;
-  const barkSettings = options.barkSettings;
-  const barkPusher = options.barkPusher;
-  const finnhubSettings = options.finnhubSettings;
-  const quoteFetcher = options.quoteFetcher;
-  const valuationFetcher = options.valuationFetcher;
+  fs.mkdirSync(dataDirectory, { recursive: true });
+  const databasePath = path.join(dataDirectory, 'workbench.sqlite');
+  const stockDatabasePath = path.join(dataDirectory, 'stock.sqlite');
+  const db = new Database(databasePath);
+  initializeSchema(db);
+  initializeStockDatabase(db, stockDatabasePath);
+  const credentialStore = createCredentialStore(db, now);
+  restoreLegacyArchiveData(db, path.join(dataDirectory, 'workbench.sqlite.legacy'), now);
+  const bindCredentialStore = (handler) => typeof handler === 'function' ? (...args) => handler(...args, credentialStore) : undefined;
+  const configuredModelSettings = options.modelSettings || {};
+  const modelSettings = {
+    discover: bindCredentialStore(configuredModelSettings.discover),
+    get: bindCredentialStore(configuredModelSettings.get),
+    set: bindCredentialStore(configuredModelSettings.set)
+  };
+  const configuredBarkSettings = options.barkSettings || {};
+  const barkSettings = {
+    get: bindCredentialStore(configuredBarkSettings.get),
+    set: bindCredentialStore(configuredBarkSettings.set)
+  };
+  const barkPusher = bindCredentialStore(options.barkPusher);
+  const configuredFinnhubSettings = options.finnhubSettings || {};
+  const finnhubSettings = {
+    get: bindCredentialStore(configuredFinnhubSettings.get),
+    set: bindCredentialStore(configuredFinnhubSettings.set),
+    test: bindCredentialStore(configuredFinnhubSettings.test)
+  };
+  const officialCalendarFetcher = options.officialCalendarFetcher;
+  const quoteFetcher = bindCredentialStore(options.quoteFetcher);
+  const valuationFetcher = bindCredentialStore(options.valuationFetcher);
   const configuredGitHubStarsSettings = options.githubStarsSettings || {};
   const githubStarsSettings = {
-    get: typeof configuredGitHubStarsSettings.get === 'function' ? configuredGitHubStarsSettings.get : getSafeGitHubStarsSettings,
-    set: typeof configuredGitHubStarsSettings.set === 'function' ? configuredGitHubStarsSettings.set : writeGitHubStarsToken,
-    clear: typeof configuredGitHubStarsSettings.clear === 'function' ? configuredGitHubStarsSettings.clear : clearGitHubStarsToken,
-    readToken: typeof configuredGitHubStarsSettings.readToken === 'function' ? configuredGitHubStarsSettings.readToken : readGitHubStarsToken
+    get: bindCredentialStore(configuredGitHubStarsSettings.get || getSafeGitHubStarsSettings),
+    set: bindCredentialStore(configuredGitHubStarsSettings.set || writeGitHubStarsToken),
+    clear: bindCredentialStore(configuredGitHubStarsSettings.clear || clearGitHubStarsToken),
+    readToken: bindCredentialStore(configuredGitHubStarsSettings.readToken || readGitHubStarsToken)
   };
   const githubStarsPageFetcher = typeof options.githubStarsPageFetcher === 'function' ? options.githubStarsPageFetcher : fetchGitHubStarredPage;
   const kindleSync = typeof options.kindleSync === 'function' ? options.kindleSync : runKindleSync;
@@ -706,10 +993,6 @@ function createContentHub(options = {}) {
   const captureGitHubRepository = createGitHubRepositoryCapture({
     repositoryFetcher: options.githubRepositoryFetcher
   });
-  fs.mkdirSync(dataDirectory, { recursive: true });
-  const databasePath = path.join(dataDirectory, 'x-assistant.sqlite');
-  const db = new Database(databasePath);
-  initializeSchema(db);
   const backupDirectory = path.join(dataDirectory, 'backups');
   fs.mkdirSync(backupDirectory, { recursive: true });
   let retentionNow = now();
@@ -1387,6 +1670,155 @@ function createContentHub(options = {}) {
       .run(material.id, material.content, material.topic, Number(material.mayQuoteVerbatim), timestamp, timestamp, null);
     return material;
   }
+  function normalizePromptText(value, maxLength) {
+    return String(value ?? '').trim().normalize('NFKC').slice(0, maxLength);
+  }
+
+  function normalizePromptTags(value) {
+    const values = Array.isArray(value) ? value : String(value ?? '').split(/[、,，\n]/);
+    const tags = [];
+    const seen = new Set();
+    for (const item of values) {
+      const tag = normalizePromptText(item, 100);
+      const key = tag.toLocaleLowerCase();
+      if (!tag || seen.has(key)) continue;
+      seen.add(key);
+      tags.push(tag);
+    }
+    return tags.slice(0, 30);
+  }
+
+  function mapPrompt(row) {
+    return {
+      id: row.id,
+      kind: row.kind === 'short' ? 'short' : 'full',
+      title: row.title,
+      category: row.category,
+      content: row.content,
+      notes: row.notes,
+      tags: parseJson(row.tags, []),
+      enabled: Boolean(row.enabled),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function getPrompt(id) {
+    const row = db.prepare('SELECT * FROM prompts WHERE id = ?').get(id);
+    return row ? mapPrompt(row) : null;
+  }
+  function listPrompts(filters = {}) {
+    const status = ['active', 'disabled'].includes(filters.status) ? filters.status : 'all';
+    const kind = ['full', 'short'].includes(filters.kind) ? filters.kind : 'all';
+    const conditions = [];
+    const values = [];
+    if (kind !== 'all') {
+      conditions.push('kind = ?');
+      values.push(kind);
+    }
+    if (status !== 'all') {
+      conditions.push('enabled = ?');
+      values.push(status === 'active' ? 1 : 0);
+    }
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const rows = db.prepare(`SELECT * FROM prompts${where} ORDER BY updated_at DESC, created_at DESC`).all(...values);
+    const query = normalizePromptText(filters.query, 200).toLocaleLowerCase();
+    const category = normalizePromptText(filters.category, 100);
+    const prompts = rows.map(mapPrompt).filter((prompt) => {
+      if (category && prompt.category !== category) return false;
+      if (!query) return true;
+      return [prompt.title, prompt.category, prompt.content, prompt.notes, ...prompt.tags]
+        .some((value) => value.toLocaleLowerCase().includes(query));
+    });
+    const categories = db.prepare(`SELECT DISTINCT category FROM prompts${kind === 'all' ? '' : ' WHERE kind = ?'} ORDER BY category COLLATE NOCASE`)
+      .all(...(kind === 'all' ? [] : [kind]))
+      .map(({ category: name }) => name);
+    return { prompts, categories };
+  }
+
+  function createPrompt(input = {}) {
+    const kind = input.kind === 'short' ? 'short' : 'full';
+    const title = normalizePromptText(input.title, 200);
+    const content = normalizePromptText(input.content, kind === 'short' ? 2_000 : 20_000);
+    if (!title || !content) throw new Error('提示词名称和正文不能为空。');
+    const timestamp = asIso(undefined, now());
+    const prompt = {
+      id: createId(),
+      kind,
+      title,
+      category: normalizePromptText(input.category, 100) || '未分类',
+      content,
+      notes: normalizePromptText(input.notes, 2_000),
+      tags: normalizePromptTags(input.tags),
+      enabled: input.enabled !== false,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    db.prepare(`INSERT INTO prompts(id, kind, title, category, content, notes, tags, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(prompt.id, prompt.kind, prompt.title, prompt.category, prompt.content, prompt.notes, JSON.stringify(prompt.tags), Number(prompt.enabled), timestamp, timestamp);
+    return getPrompt(prompt.id);
+  }
+
+  function updatePrompt(id, input = {}) {
+    const existing = getPrompt(id);
+    if (!existing) return null;
+    const kind = input.kind === undefined ? existing.kind : input.kind === 'short' ? 'short' : 'full';
+    const prompt = {
+      ...existing,
+      kind,
+      title: input.title === undefined ? existing.title : normalizePromptText(input.title, 200),
+      category: input.category === undefined ? existing.category : normalizePromptText(input.category, 100) || '未分类',
+      content: input.content === undefined ? existing.content : normalizePromptText(input.content, kind === 'short' ? 2_000 : 20_000),
+      notes: input.notes === undefined ? existing.notes : normalizePromptText(input.notes, 2_000),
+      tags: input.tags === undefined ? existing.tags : normalizePromptTags(input.tags),
+      enabled: input.enabled === undefined ? existing.enabled : Boolean(input.enabled)
+    };
+    if (!prompt.title || !prompt.content) throw new Error('提示词名称和正文不能为空。');
+    const updatedAt = asIso(undefined, now());
+    db.prepare(`UPDATE prompts SET kind = ?, title = ?, category = ?, content = ?, notes = ?, tags = ?, enabled = ?, updated_at = ?
+      WHERE id = ?`)
+      .run(prompt.kind, prompt.title, prompt.category, prompt.content, prompt.notes, JSON.stringify(prompt.tags), Number(prompt.enabled), updatedAt, id);
+    return getPrompt(id);
+  }
+
+  function deletePrompt(id) {
+    return db.prepare('DELETE FROM prompts WHERE id = ?').run(id).changes > 0;
+  }
+  function listSkills() {
+    const catalogs = skillSources.map((source) => scanSkillDocuments(source.directory, source));
+    const documents = catalogs.flatMap((catalog) => catalog.documents);
+    const warnings = catalogs.flatMap((catalog) => catalog.warnings);
+    const countByAgent = new Map();
+    for (const skill of documents) {
+      if (skill.agent) countByAgent.set(skill.agent, (countByAgent.get(skill.agent) || 0) + 1);
+    }
+    const notes = new Map(db.prepare('SELECT skill_id, note FROM skill_notes').all().map(({ skill_id: id, note }) => [id, note]));
+    return {
+      skills: documents.map((skill) => ({ ...skill, note: notes.get(skill.id) || '' })),
+      warnings,
+      agents: skillSources
+        .filter((source) => source.id)
+        .map((source) => ({
+          id: normalizeSkillText(source.id, 40),
+          label: normalizeSkillText(source.label, 100) || normalizeSkillText(source.id, 40),
+          count: countByAgent.get(normalizeSkillText(source.id, 40)) || 0
+        }))
+    };
+  }
+
+  function updateSkillNote(id, input = {}) {
+    const catalog = listSkills();
+    const skill = catalog.skills.find((item) => item.id === id);
+    if (!skill) return null;
+    const note = normalizeSkillText(input.note, 10_000);
+    const timestamp = asIso(undefined, now());
+    db.prepare(`INSERT INTO skill_notes(skill_id, note, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(skill_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at`)
+      .run(id, note, timestamp);
+    return { skill: { ...skill, note }, warnings: catalog.warnings };
+  }
+
 
   function materialCount() {
     return db.prepare('SELECT COUNT(*) AS count FROM materials WHERE archived_at IS NULL').get().count;
@@ -1597,7 +2029,68 @@ function normalizeStockNumber(value, label) {
   }
 
   function listStockPositions() {
-  return db.prepare('SELECT * FROM stock_positions ORDER BY created_at').all().map(mapStockPosition);
+    return db.prepare('SELECT * FROM stock.stock_positions ORDER BY created_at').all().map(mapStockPosition);
+}
+function mapStockSoldPosition(row) {
+  return {
+    id: row.id,
+    positionId: row.position_id,
+    symbol: row.symbol,
+    name: row.name,
+    market: row.market,
+    quantity: row.quantity,
+    costPrice: row.cost_price,
+    sellPrice: row.sell_price,
+    realizedPnl: row.realized_pnl,
+    soldAt: row.sold_at,
+    notes: row.notes,
+    createdAt: row.created_at
+  };
+}
+
+function listStockSoldPositions() {
+  return db.prepare('SELECT * FROM stock.stock_sold_positions ORDER BY sold_at DESC, created_at DESC').all().map(mapStockSoldPosition);
+}
+
+function sellStockPosition(id, input) {
+  const existing = db.prepare('SELECT * FROM stock.stock_positions WHERE id = ?').get(id);
+  if (!existing) return null;
+  const quantity = input.quantity === undefined ? existing.quantity : normalizeStockNumber(input.quantity, '卖出数量');
+  const sellPrice = normalizeStockNumber(input.sellPrice, '卖出价格');
+  if (quantity <= 0 || quantity > existing.quantity) throw new Error('卖出数量必须大于 0 且不能超过当前持仓。');
+  if (sellPrice < 0) throw new Error('卖出价格不能为负数。');
+  const timestamp = asIso(undefined, now());
+  const remainingQuantity = existing.quantity - quantity;
+  const sale = {
+    id: createId(),
+    positionId: existing.id,
+    symbol: existing.symbol,
+    name: existing.name,
+    market: existing.market,
+    quantity,
+    costPrice: existing.cost_price,
+    sellPrice,
+    realizedPnl: (sellPrice - existing.cost_price) * quantity,
+    soldAt: timestamp,
+    notes: String(input.notes || '').trim(),
+    createdAt: timestamp
+  };
+  const transact = db.transaction(() => {
+    db.prepare(`INSERT INTO stock.stock_sold_positions
+      (id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(sale.id, sale.positionId, sale.symbol, sale.name, sale.market, sale.quantity, sale.costPrice, sale.sellPrice, sale.realizedPnl, sale.soldAt, sale.notes, sale.createdAt);
+    if (remainingQuantity <= 0) {
+      db.prepare('DELETE FROM stock.stock_positions WHERE id = ?').run(id);
+    } else {
+      db.prepare('UPDATE stock.stock_positions SET quantity = ?, updated_at = ? WHERE id = ?').run(remainingQuantity, timestamp, id);
+    }
+  });
+  transact();
+  return {
+    sale: mapStockSoldPosition(db.prepare('SELECT * FROM stock.stock_sold_positions WHERE id = ?').get(sale.id)),
+    position: remainingQuantity <= 0 ? null : mapStockPosition(db.prepare('SELECT * FROM stock.stock_positions WHERE id = ?').get(id))
+  };
 }
 
 function mapStockSymbol(row) {
@@ -1605,7 +2098,7 @@ function mapStockSymbol(row) {
 }
 
 function listStockSymbols() {
-  return db.prepare('SELECT * FROM stock_symbols ORDER BY is_default DESC, updated_at DESC, symbol COLLATE NOCASE').all().map(mapStockSymbol);
+    return db.prepare('SELECT * FROM stock.stock_symbols ORDER BY is_default DESC, updated_at DESC, symbol COLLATE NOCASE').all().map(mapStockSymbol);
 }
 
 function upsertStockSymbol(input) {
@@ -1614,7 +2107,7 @@ function upsertStockSymbol(input) {
   const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
   if (!symbol || !name || !market) return null;
   const timestamp = asIso(undefined, now());
-  db.prepare(`INSERT INTO stock_symbols(symbol, name, market, is_default, created_at, updated_at)
+    db.prepare(`INSERT INTO stock.stock_symbols(symbol, name, market, is_default, created_at, updated_at)
     VALUES (?, ?, ?, 0, ?, ?)
     ON CONFLICT(symbol) DO UPDATE SET name = excluded.name, market = excluded.market, updated_at = excluded.updated_at`)
     .run(symbol, name, market, timestamp, timestamp);
@@ -1642,7 +2135,7 @@ function mapStockEntryPlan(row) {
 }
 
 function listStockEntryPlans() {
-  return db.prepare('SELECT * FROM stock_entry_plans ORDER BY created_at').all().map(mapStockEntryPlan);
+    return db.prepare('SELECT * FROM stock.stock_entry_plans ORDER BY created_at').all().map(mapStockEntryPlan);
 }
 
 function createStockEntryPlan(input) {
@@ -1657,14 +2150,14 @@ function createStockEntryPlan(input) {
   const targetPercent = normalizeTargetPercent(input.targetPercent);
   const timestamp = asIso(undefined, now());
   const plan = { id: createId(), symbol, name, market, entryPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp };
-  db.prepare('INSERT INTO stock_entry_plans(id, symbol, name, market, entry_price, target_percent, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    db.prepare('INSERT INTO stock.stock_entry_plans(id, symbol, name, market, entry_price, target_percent, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(plan.id, plan.symbol, plan.name, plan.market, plan.entryPrice, plan.targetPercent, plan.notes, timestamp, timestamp);
   upsertStockSymbol(plan);
   return plan;
 }
 
 function updateStockEntryPlan(id, input) {
-  const existing = db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id);
+    const existing = db.prepare('SELECT * FROM stock.stock_entry_plans WHERE id = ?').get(id);
   if (!existing) return null;
   const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? normalizeStockSymbol(input.symbol) : existing.symbol;
   const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
@@ -1681,18 +2174,18 @@ function updateStockEntryPlan(id, input) {
     const marketError = cacheInvalidated ? null : existing.market_error;
     const marketStatus = cacheInvalidated ? null : (currentPrice !== null && currentPrice !== undefined ? (currentPrice <= entryPrice ? 'openable' : 'waiting') : existing.market_status);
     const timestamp = asIso(undefined, now());
-    db.prepare('UPDATE stock_entry_plans SET symbol = ?, name = ?, market = ?, entry_price = ?, target_percent = ?, notes = ?, current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?')
+    db.prepare('UPDATE stock.stock_entry_plans SET symbol = ?, name = ?, market = ?, entry_price = ?, target_percent = ?, notes = ?, current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?')
       .run(symbol, name, market, entryPrice, targetPercent, notes, currentPrice, trailingPE, forwardPE, marketStatus, marketUpdatedAt, marketError, timestamp, id);
   upsertStockSymbol({ symbol, name, market });
-  return mapStockEntryPlan(db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id));
+    return mapStockEntryPlan(db.prepare('SELECT * FROM stock.stock_entry_plans WHERE id = ?').get(id));
 }
 
 function deleteStockEntryPlan(id) {
-  return db.prepare('DELETE FROM stock_entry_plans WHERE id = ?').run(id).changes > 0;
+    return db.prepare('DELETE FROM stock.stock_entry_plans WHERE id = ?').run(id).changes > 0;
 }
 
 async function moveStockEntryPlanToPosition(id, input) {
-  const plan = db.prepare('SELECT * FROM stock_entry_plans WHERE id = ?').get(id);
+    const plan = db.prepare('SELECT * FROM stock.stock_entry_plans WHERE id = ?').get(id);
   if (!plan) return null;
   const quantity = normalizeStockNumber(input.quantity, '持仓数量');
   const costPrice = input.costPrice === undefined ? plan.entry_price : normalizeStockNumber(input.costPrice, '成本价');
@@ -1734,14 +2227,14 @@ async function createStockPosition(input) {
       priceUpdatedAt = quote.quotedAt || timestamp;
     }
     const position = { id: createId(), symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp, priceUpdatedAt };
-    db.prepare('INSERT INTO stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at, price_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    db.prepare('INSERT INTO stock.stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at, price_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp, position.priceUpdatedAt);
     upsertStockSymbol(position);
     return position;
   }
 
   function updateStockPosition(id, input) {
-    const existing = db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id);
+    const existing = db.prepare('SELECT * FROM stock.stock_positions WHERE id = ?').get(id);
     if (!existing) return null;
     const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? normalizeStockSymbol(input.symbol) : existing.symbol;
     const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
@@ -1754,14 +2247,14 @@ async function createStockPosition(input) {
     const notes = typeof input.notes === 'string' ? input.notes.trim() : existing.notes;
     const targetPercent = input.targetPercent === undefined ? existing.target_percent : normalizeTargetPercent(input.targetPercent);
     const timestamp = asIso(undefined, now());
-    db.prepare('UPDATE stock_positions SET symbol = ?, name = ?, market = ?, quantity = ?, cost_price = ?, current_price = ?, target_percent = ?, notes = ?, updated_at = ? WHERE id = ?')
+    db.prepare('UPDATE stock.stock_positions SET symbol = ?, name = ?, market = ?, quantity = ?, cost_price = ?, current_price = ?, target_percent = ?, notes = ?, updated_at = ? WHERE id = ?')
       .run(symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes, timestamp, id);
     upsertStockSymbol({ symbol, name, market });
-    return mapStockPosition(db.prepare('SELECT * FROM stock_positions WHERE id = ?').get(id));
+    return mapStockPosition(db.prepare('SELECT * FROM stock.stock_positions WHERE id = ?').get(id));
   }
 
   function deleteStockPosition(id) {
-    return db.prepare('DELETE FROM stock_positions WHERE id = ?').run(id).changes > 0;
+    return db.prepare('DELETE FROM stock.stock_positions WHERE id = ?').run(id).changes > 0;
   }
 
   async function refreshStockPrices() {
@@ -1774,7 +2267,7 @@ async function createStockPosition(input) {
       if (!quotesBySymbol.has(position.symbol)) quotesBySymbol.set(position.symbol, await quoteFetcher(position.symbol));
     }
     const timestamp = asIso(undefined, now());
-    const update = db.prepare('UPDATE stock_positions SET current_price = ?, trailing_pe = ?, forward_pe = ?, price_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
+    const update = db.prepare('UPDATE stock.stock_positions SET current_price = ?, trailing_pe = ?, forward_pe = ?, price_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
     const updated = [];
     for (const position of usPositions) {
       const quote = quotesBySymbol.get(position.symbol);
@@ -1811,8 +2304,8 @@ async function createStockPosition(input) {
       }
     }
     const timestamp = asIso(undefined, now());
-    const updateSuccess = db.prepare('UPDATE stock_entry_plans SET current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
-    const updateFailure = db.prepare('UPDATE stock_entry_plans SET market_error = ?, updated_at = ? WHERE id = ?');
+    const updateSuccess = db.prepare('UPDATE stock.stock_entry_plans SET current_price = ?, trailing_pe = ?, forward_pe = ?, market_status = ?, market_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
+    const updateFailure = db.prepare('UPDATE stock.stock_entry_plans SET market_error = ?, updated_at = ? WHERE id = ?');
     const updated = usPlans.filter((plan) => dataBySymbol.has(plan.symbol)).map((plan) => {
       const { quote, valuation, valuationError } = dataBySymbol.get(plan.symbol);
       const marketUpdatedAt = quote.quotedAt || timestamp;
@@ -1831,10 +2324,10 @@ async function createStockPosition(input) {
   }
 
   function getStockAlertRules() {
-    const rows = db.prepare('SELECT id, payload FROM stock_alert_rules ORDER BY rowid').all();
+    const rows = db.prepare('SELECT id, payload FROM stock.stock_alert_rules ORDER BY rowid').all();
     if (!rows.length) {
       const timestamp = asIso(undefined, now());
-      const insert = db.prepare('INSERT INTO stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?)');
+      const insert = db.prepare('INSERT INTO stock.stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?)');
       for (const rule of DEFAULT_STOCK_ALERT_RULES) insert.run(rule.id, JSON.stringify(rule), timestamp);
       return DEFAULT_STOCK_ALERT_RULES;
     }
@@ -1854,7 +2347,7 @@ async function createStockPosition(input) {
       return { ...base, level: String(rule.level || base.level).trim() || base.level, uvxyThreshold, marketThreshold, twoDayThreshold, message: String(rule.message || '').trim() || base.message, enabled: rule.enabled !== false };
     });
     const timestamp = asIso(undefined, now());
-    const update = db.prepare('INSERT INTO stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at');
+    const update = db.prepare('INSERT INTO stock.stock_alert_rules(id, payload, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at');
     const transaction = db.transaction(() => rules.forEach((rule) => update.run(rule.id, JSON.stringify(rule), timestamp)));
     transaction();
     return rules;
@@ -1865,13 +2358,13 @@ async function createStockPosition(input) {
     const uvxy = validQuotes.get('UVXY');
     if (!uvxy) return { triggered: [], deliveryErrors: [] };
     const tradingDate = new Date(uvxy.quotedAt || now()).toISOString().slice(0, 10);
-    const snapshot = db.prepare('INSERT INTO stock_alert_snapshots(symbol, trading_date, change_percent, captured_at) VALUES (?, ?, ?, ?) ON CONFLICT(symbol, trading_date) DO UPDATE SET change_percent = excluded.change_percent, captured_at = excluded.captured_at');
+    const snapshot = db.prepare('INSERT INTO stock.stock_alert_snapshots(symbol, trading_date, change_percent, captured_at) VALUES (?, ?, ?, ?) ON CONFLICT(symbol, trading_date) DO UPDATE SET change_percent = excluded.change_percent, captured_at = excluded.captured_at');
     const timestamp = asIso(undefined, now());
     for (const symbol of ['UVXY', 'VOO', 'QQQ']) {
       const quote = validQuotes.get(symbol);
       if (quote) snapshot.run(symbol, tradingDate, Number(quote.changePercent), timestamp);
     }
-    const previous = db.prepare("SELECT change_percent FROM stock_alert_snapshots WHERE symbol = 'UVXY' AND trading_date < ? ORDER BY trading_date DESC LIMIT 1").get(tradingDate);
+    const previous = db.prepare("SELECT change_percent FROM stock.stock_alert_snapshots WHERE symbol = 'UVXY' AND trading_date < ? ORDER BY trading_date DESC LIMIT 1").get(tradingDate);
     const twoDayChange = previous && Number.isFinite(Number(previous.change_percent)) ? Number(uvxy.changePercent) + Number(previous.change_percent) : null;
     const rules = getStockAlertRules();
     const triggered = [];
@@ -1882,7 +2375,7 @@ async function createStockPosition(input) {
       if (!rule.enabled || Number(uvxy.changePercent) < rule.uvxyThreshold || (!marketCondition && !twoDayCondition)) continue;
       const alert = { ...rule, tradingDate, uvxyChangePercent: Number(uvxy.changePercent), marketCondition, twoDayChange, pushed: false };
       triggered.push(alert);
-      const delivered = db.prepare('SELECT 1 FROM stock_alert_deliveries WHERE rule_id = ? AND trading_date = ?').get(rule.id, tradingDate);
+      const delivered = db.prepare('SELECT 1 FROM stock.stock_alert_deliveries WHERE rule_id = ? AND trading_date = ?').get(rule.id, tradingDate);
       if (delivered) { alert.pushed = true; continue; }
       if (!deliver) continue;
       try {
@@ -1890,7 +2383,7 @@ async function createStockPosition(input) {
         if (!configured || typeof barkPusher !== 'function') { deliveryErrors.push({ ruleId: rule.id, error: 'Bark 未配置。' }); continue; }
         const marketText = ['VOO', 'QQQ'].map((symbol) => `${symbol} ${validQuotes.get(symbol)?.changePercent === undefined ? '—' : `${Number(validQuotes.get(symbol).changePercent).toFixed(2)}%`}`).join('，');
         await barkPusher(`市场预警 · ${rule.level}`, `${rule.message}\nUVXY ${Number(uvxy.changePercent).toFixed(2)}%，${marketText}${twoDayChange === null ? '' : `\nUVXY 两日累计 ${twoDayChange.toFixed(2)}%`}`);
-        db.prepare('INSERT INTO stock_alert_deliveries(rule_id, trading_date, pushed_at) VALUES (?, ?, ?)').run(rule.id, tradingDate, timestamp);
+        db.prepare('INSERT INTO stock.stock_alert_deliveries(rule_id, trading_date, pushed_at) VALUES (?, ?, ?)').run(rule.id, tradingDate, timestamp);
         alert.pushed = true;
       } catch (error) { deliveryErrors.push({ ruleId: rule.id, error: error.message }); }
     }
@@ -1912,6 +2405,10 @@ async function createStockPosition(input) {
     }));
     const alerts = await evaluateStockMarketAlerts(quotes, { deliver });
     return { quotes, updatedAt: new Date().toISOString(), alerts };
+  }
+
+  async function getStockEvents() {
+    return buildMarketEventsResponse({ now: now(), officialCalendarFetcher });
   }
 
   async function getDashboardStockAlerts() {
@@ -1937,7 +2434,7 @@ async function createStockPosition(input) {
   }
 
   function getStockSettings() {
-    const row = db.prepare("SELECT * FROM stock_settings WHERE id = 'default'").get();
+    const row = db.prepare("SELECT * FROM stock.stock_settings WHERE id = 'default'").get();
     return { totalAssets: row ? row.total_assets : 0 };
   }
 
@@ -1945,7 +2442,7 @@ async function createStockPosition(input) {
     const totalAssets = Number(input.totalAssets);
     if (!Number.isFinite(totalAssets) || totalAssets < 0) throw new Error('总资产必须是非负数字。');
     const timestamp = asIso(undefined, now());
-    db.prepare("INSERT INTO stock_settings(id, total_assets, updated_at) VALUES ('default', ?, ?) ON CONFLICT(id) DO UPDATE SET total_assets = excluded.total_assets, updated_at = excluded.updated_at").run(totalAssets, timestamp);
+    db.prepare("INSERT INTO stock.stock_settings(id, total_assets, updated_at) VALUES ('default', ?, ?) ON CONFLICT(id) DO UPDATE SET total_assets = excluded.total_assets, updated_at = excluded.updated_at").run(totalAssets, timestamp);
     return { totalAssets };
   }
 
@@ -2088,6 +2585,15 @@ async function createStockPosition(input) {
     }
     return { pushed: results.filter((result) => result.pushed).length, due: dueItems.length, results };
   }
+  async function testExpiringReminder(id) {
+    const row = db.prepare('SELECT * FROM expiring_items WHERE id = ?').get(id);
+    if (!row) return null;
+    if (typeof barkPusher !== 'function') throw new Error('Bark 推送不可用。');
+    if (typeof barkSettings?.get === 'function' && !(await barkSettings.get())?.configured) throw new Error('Bark 未配置。');
+    const item = mapExpiringItem(row);
+    await barkPusher('到期提醒测试', `${item.name} · ${formatDateTime(item.dueAt)}${item.notes ? ` · ${item.notes}` : ''}`);
+    return { id: item.id, pushed: true };
+  }
 
   function normalizeSchedule(input) {
     const weekday = Number(input.weekday);
@@ -2154,14 +2660,15 @@ async function createStockPosition(input) {
       db.prepare(`INSERT INTO generation_runs(id, operating_date, trigger_type, status, error_message, created_at, completed_at)
         VALUES (?, ?, 'scheduled', 'started', NULL, ?, NULL)`).run(runId, operatingDate, startedAt);
       try {
-        const candidates = await generator({
-          trigger: 'scheduled',
-          operatingDate,
-          profile: getProfile(),
-          materials: listMaterials().filter((material) => !material.archivedAt),
-          preferences: getStyle(),
-          archiveProfile: getArchiveProfile().objective
-        });
+          const candidates = await generator({
+            trigger: 'scheduled',
+            operatingDate,
+            profile: getProfile(),
+            materials: listMaterials().filter((material) => !material.archivedAt),
+            preferences: getStyle(),
+            archiveProfile: getArchiveProfile().objective,
+            credentialStore
+          });
         if (!Array.isArray(candidates) || candidates.length !== 10) throw new Error('定时生成必须返回完整的十条候选。');
         const pack = createContentPack({ trigger: 'scheduled', operatingDate, candidates, createdAt: startedAt });
         db.prepare(`UPDATE generation_runs SET status = 'succeeded', completed_at = ? WHERE id = ?`).run(asIso(undefined, currentTime), runId);
@@ -2181,7 +2688,7 @@ async function createStockPosition(input) {
     db.prepare(`INSERT INTO generation_runs(id, operating_date, trigger_type, status, error_message, created_at, completed_at)
       VALUES (?, ?, 'manual', 'started', NULL, ?, NULL)`).run(runId, operatingDate, createdAt);
     try {
-      const candidates = await generator({ trigger: 'manual', operatingDate, profile: getProfile(), materials: listMaterials().filter((material) => !material.archivedAt), preferences: getStyle(), archiveProfile: getArchiveProfile().objective });
+      const candidates = await generator({ trigger: 'manual', operatingDate, profile: getProfile(), materials: listMaterials().filter((material) => !material.archivedAt), preferences: getStyle(), archiveProfile: getArchiveProfile().objective, credentialStore });
       if (!Array.isArray(candidates) || candidates.length !== 10) throw new Error('手动生成必须返回完整的十条候选。');
       const pack = createContentPack({ trigger: 'manual', operatingDate, candidates, createdAt });
       db.prepare(`UPDATE generation_runs SET status = 'succeeded', completed_at = ? WHERE id = ?`).run(asIso(undefined, currentTime), runId);
@@ -2491,6 +2998,7 @@ async function createStockPosition(input) {
     const expiredCandidateCount = packs.flatMap((pack) => pack.retentionStatus !== 'active' ? pack.candidates : []).length;
     const archivedMaterialCount = db.prepare('SELECT COUNT(*) AS count FROM materials WHERE archived_at IS NOT NULL').get().count;
     const databaseSizeBytes = fs.statSync(databasePath).size;
+    const stockDatabaseSizeBytes = fs.statSync(stockDatabasePath).size;
     const backupSizeBytes = directorySize(backupDirectory);
     const frontendSizeBytes = directorySize(staticDirectory);
     const calendar = dashboardCalendar(tasks, expiringItems, promptGeneratedAt);
@@ -2547,9 +3055,11 @@ async function createStockPosition(input) {
       materialStats: { active: materialCount(), archived: archivedMaterialCount },
       databasePath,
       databaseSizeBytes,
-      dataLocations: { database: databasePath, backups: backupDirectory, frontend: staticDirectory, keychain: 'macOS Keychain (com.x-assistant.local-hub)' },
+      stockDatabasePath,
+      dataLocations: { database: databasePath, stockDatabase: stockDatabasePath, backups: backupDirectory, frontend: staticDirectory, credentials: 'SQLite credentials table (excluded from backups)' },
       storageBreakdown: [
-        { key: 'sqlite', label: 'SQLite 数据库', bytes: databaseSizeBytes },
+        { key: 'sqlite', label: '工作台 SQLite', bytes: databaseSizeBytes },
+        { key: 'stock-sqlite', label: '股票 SQLite', bytes: stockDatabaseSizeBytes },
         { key: 'backups', label: '加密备份', bytes: backupSizeBytes },
         { key: 'frontend', label: '工作台前端', bytes: frontendSizeBytes }
       ]
@@ -2587,7 +3097,7 @@ async function createStockPosition(input) {
     let semantic = null;
     if (typeof semanticExtractor === 'function') {
       try {
-        semantic = await semanticExtractor({ tweets: archive.tweets, account: archive.account, profile: archive.profile, following: archive.following, objective });
+        semantic = await semanticExtractor({ tweets: archive.tweets, account: archive.account, profile: archive.profile, following: archive.following, objective, credentialStore });
         if (semantic) db.prepare('UPDATE archive_profiles SET semantic = ? WHERE import_id = ?').run(JSON.stringify(semantic), importId);
       } catch {
         semantic = null;
@@ -2629,9 +3139,21 @@ async function createStockPosition(input) {
     return { purgedContentPacks: packs.length, purgedReplySessions: sessions.length };
   }
 
+  function snapshotTables(schema, excluded = []) {
+    const excludedSet = new Set(excluded);
+    const tables = db.prepare(`SELECT name FROM ${schema}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all()
+      .map(({ name }) => name)
+      .filter((name) => !excludedSet.has(name))
+      .sort();
+    return Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT * FROM ${schema}."${table}"`).all()]));
+  }
+
   function snapshotDatabase() {
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'extension_tokens' ORDER BY name").all().map(({ name }) => name);
-    return { exportedAt: now().toISOString(), tables: Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT * FROM "${table}"`).all()])) };
+    return {
+      exportedAt: now().toISOString(),
+      tables: snapshotTables('main', ['extension_tokens', 'credentials']),
+      stockTables: snapshotTables('stock')
+    };
   }
 
   function exportEncryptedBackup(password) {
@@ -2641,22 +3163,30 @@ async function createStockPosition(input) {
   function restoreEncryptedBackup(archive, password) {
     const snapshot = decryptBackup(archive, password);
     if (!snapshot?.tables || typeof snapshot.tables !== 'object') throw new Error('备份内容无效。');
-    const available = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'extension_tokens'").all().map(({ name }) => name));
-    const tables = Object.keys(snapshot.tables).filter((table) => available.has(table));
-    if (!tables.length) throw new Error('备份不包含可恢复的数据。');
+    const stockTables = {
+      ...Object.fromEntries(STOCK_TABLES.filter((table) => Array.isArray(snapshot.tables[table])).map((table) => [table, snapshot.tables[table]])),
+      ...(snapshot.stockTables && typeof snapshot.stockTables === 'object' ? snapshot.stockTables : {})
+    };
+    const availableTables = new Set(Object.keys(snapshot.tables).filter((table) => hasTable(db, 'main', table)));
+    const availableStockTables = new Set(Object.keys(stockTables).filter((table) => hasTable(db, 'stock', table)));
+    if (!availableTables.size && !availableStockTables.size) throw new Error('备份不包含可恢复的数据。');
     fs.writeFileSync(path.join(backupDirectory, `before-restore-${Date.now()}.json`), encryptBackup(snapshotDatabase(), password), { mode: 0o600 });
     const foreignKeysEnabled = Boolean(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
-    const restore = db.transaction(() => {
-      for (const table of tables) db.prepare(`DELETE FROM "${table}"`).run();
-      for (const table of tables) {
-        const rows = Array.isArray(snapshot.tables[table]) ? snapshot.tables[table] : [];
+    const restoreTableSet = (schema, tableNames, source) => {
+      for (const table of tableNames) db.prepare(`DELETE FROM ${schema}."${table}"`).run();
+      for (const table of tableNames) {
+        const rows = Array.isArray(source[table]) ? source[table] : [];
         if (!rows.length) continue;
         const columns = Object.keys(rows[0]);
-        const insert = db.prepare(`INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((column) => `@${column}`).join(', ')})`);
+        const insert = db.prepare(`INSERT INTO ${schema}."${table}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map((column) => `@${column}`).join(', ')})`);
         for (const row of rows) insert.run(row);
       }
+    };
+    const restore = db.transaction(() => {
+      restoreTableSet('main', availableTables, snapshot.tables);
+      restoreTableSet('stock', availableStockTables, stockTables);
       const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
-      if (foreignKeyViolations.length) throw new Error('备份包含无效关联。');
+      if (foreignKeyViolations.length) throw new Error('备份恢复后存在数据关联错误。');
     });
     db.exec('PRAGMA foreign_keys = OFF;');
     try {
@@ -2664,7 +3194,7 @@ async function createStockPosition(input) {
     } finally {
       if (foreignKeysEnabled) db.exec('PRAGMA foreign_keys = ON;');
     }
-    return { restoredAt: now().toISOString(), tableCount: tables.length };
+    return { restoredAt: now().toISOString(), tableCount: availableTables.size + availableStockTables.size };
   }
 
   function sendJson(response, status, payload) {
@@ -2718,6 +3248,20 @@ async function createStockPosition(input) {
       if (request.method === 'POST' && pathname === '/v1/pairings') return sendJson(response, 201, createExtensionToken(origin, (await parseRequest(request)).code));
       if (!isAuthorizedExtension(request)) return sendJson(response, 401, { error: '本机服务未配对或访问令牌已失效。' });
       if (request.method === 'GET' && pathname === '/v1/dashboard') return sendJson(response, 200, await getDashboard());
+      if (request.method === 'GET' && pathname === '/v1/materials') return sendJson(response, 200, { materials: listMaterials() });
+      if (request.method === 'POST' && pathname === '/v1/materials') return sendJson(response, 201, { material: createMaterial(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/skills') return sendJson(response, 200, listSkills());
+      const skillMatch = pathname.match(/^\/v1\/skills\/([^/]+)$/);
+      if (skillMatch && request.method === 'PATCH') {
+        let skillId;
+        try {
+          skillId = decodeURIComponent(skillMatch[1]);
+        } catch {
+          return sendJson(response, 404, { error: 'skill 不存在。' });
+        }
+        const result = updateSkillNote(skillId, await parseRequest(request));
+        return result ? sendJson(response, 200, result) : sendJson(response, 404, { error: 'skill 不存在。' });
+      }
       if (request.method === 'GET' && pathname === '/v1/model-settings') {
         return sendJson(response, 200, typeof modelSettings?.get === 'function' ? await modelSettings.get() : { configured: false });
       }
@@ -2847,12 +3391,7 @@ async function createStockPosition(input) {
           ? sendJson(response, 409, { error: '该地址已经存在。', existingRecord: result.existingRecord })
           : sendJson(response, 200, result);
       }
-      if (programmingRecordMatch && request.method === 'DELETE') {
-        return deleteProgrammingRecord(programmingRecordMatch[1])
-          ? sendJson(response, 204, {})
-          : sendJson(response, 404, { error: '编程记录不存在。' });
-      }
-      if (request.method === 'GET' && pathname === '/v1/expiring-items') return sendJson(response, 200, { items: listExpiringItems() });
+      if (programmingRecordMatch && request.method === 'DELETE') return deleteProgrammingRecord(programmingRecordMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '编程记录不存在。' });
       if (request.method === 'POST' && pathname === '/v1/expiring-items') return sendJson(response, 201, { item: createExpiringItem(await parseRequest(request)) });
       const expiringItemMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)$/);
       if (expiringItemMatch && request.method === 'PATCH') {
@@ -2860,6 +3399,11 @@ async function createStockPosition(input) {
         return item ? sendJson(response, 200, { item }) : sendJson(response, 404, { error: '到期项不存在。' });
       }
       if (expiringItemMatch && request.method === 'DELETE') return deleteExpiringItem(expiringItemMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '到期项不存在。' });
+      const expiringTestMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)\/test$/);
+      if (request.method === 'POST' && expiringTestMatch) {
+        const result = await testExpiringReminder(expiringTestMatch[1]);
+        return result ? sendJson(response, 200, { result }) : sendJson(response, 404, { error: '到期项不存在。' });
+      }
       const expiringConfirmMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)\/confirm$/);
       if (request.method === 'POST' && expiringConfirmMatch) {
         const item = confirmExpiringItem(expiringConfirmMatch[1]);
@@ -2906,9 +3450,17 @@ async function createStockPosition(input) {
         return plan ? sendJson(response, 200, { plan }) : sendJson(response, 404, { error: '待开仓股票不存在。' });
       }
       if (stockEntryPlanMatch && request.method === 'DELETE') return deleteStockEntryPlan(stockEntryPlanMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '待开仓股票不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: getStockSettings() });
+      if (request.method === 'PUT' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: setStockSettings(await parseRequest(request)) });
       if (request.method === 'GET' && pathname === '/v1/stock-positions') return sendJson(response, 200, { positions: listStockPositions() });
+      if (request.method === 'GET' && pathname === '/v1/stock-sold-positions') return sendJson(response, 200, { soldPositions: listStockSoldPositions() });
       if (request.method === 'POST' && pathname === '/v1/stock-positions/refresh-prices') return sendJson(response, 200, await refreshStockPrices());
       if (request.method === 'POST' && pathname === '/v1/stock-positions') return sendJson(response, 201, { position: await createStockPosition(await parseRequest(request)) });
+      const stockPositionSellMatch = pathname.match(/^\/v1\/stock-positions\/([^/]+)\/sell$/);
+      if (stockPositionSellMatch && request.method === 'POST') {
+        const result = sellStockPosition(stockPositionSellMatch[1], await parseRequest(request));
+        return result ? sendJson(response, 201, result) : sendJson(response, 404, { error: '持仓不存在。' });
+      }
       const stockPositionMatch = pathname.match(/^\/v1\/stock-positions\/([^/]+)$/);
       if (stockPositionMatch && request.method === 'PATCH') {
         const position = updateStockPosition(stockPositionMatch[1], await parseRequest(request));
@@ -2922,11 +3474,37 @@ async function createStockPosition(input) {
         const symbols = String(url.searchParams.get('symbols') || '').split(',');
         return sendJson(response, 200, await getStockMarketQuotes(symbols));
       }
-      if (request.method === 'GET' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: getStockSettings() });
-      if (request.method === 'PUT' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: setStockSettings(await parseRequest(request)) });
-      if (request.method === 'PUT' && pathname === '/v1/profile') return sendJson(response, 200, { profile: setProfile(await parseRequest(request)) });
-      if (request.method === 'GET' && pathname === '/v1/materials') return sendJson(response, 200, { materials: listMaterials() });
-      if (request.method === 'POST' && pathname === '/v1/materials') return sendJson(response, 201, { material: createMaterial(await parseRequest(request)) });
+      if (request.method === 'GET' && pathname === '/v1/stock-events') return sendJson(response, 200, await getStockEvents());
+      if (request.method === 'GET' && pathname === '/v1/prompts') {
+        return sendJson(response, 200, listPrompts({
+          query: url.searchParams.get('query') || '',
+          category: url.searchParams.get('category') || '',
+          status: url.searchParams.get('status') || 'all',
+          kind: url.searchParams.get('kind') || 'all'
+        }));
+      }
+      if (request.method === 'POST' && pathname === '/v1/prompts') return sendJson(response, 201, { prompt: createPrompt(await parseRequest(request)) });
+      const promptMatch = pathname.match(/^\/v1\/prompts\/([^/]+)$/);
+      if (promptMatch && request.method === 'GET') {
+        const prompt = getPrompt(promptMatch[1]);
+        return prompt ? sendJson(response, 200, { prompt }) : sendJson(response, 404, { error: '提示词不存在。' });
+      }
+      if (promptMatch && request.method === 'PATCH') {
+        const prompt = updatePrompt(promptMatch[1], await parseRequest(request));
+        return prompt ? sendJson(response, 200, { prompt }) : sendJson(response, 404, { error: '提示词不存在。' });
+      }
+      if (promptMatch && request.method === 'DELETE') return deletePrompt(promptMatch[1])
+        ? sendJson(response, 204, {})
+        : sendJson(response, 404, { error: '提示词不存在。' });
+      if (request.method === 'POST' && pathname === '/v1/daily-tweets/generate') {
+        if (typeof tweetGenerator !== 'function') return sendJson(response, 503, { error: '推文生成服务尚未配置。' });
+        const input = await parseRequest(request);
+        const prompt = getPrompt(String(input.promptId || '').trim());
+        if (!prompt || prompt.kind !== 'full') throw new Error('请选择一条完整提示词。');
+        if (!prompt.enabled) throw new Error('所选提示词已停用，请先启用后再生成。');
+        const result = await tweetGenerator({ ...input, prompt, credentialStore });
+        return sendJson(response, 201, { result: { ...result, promptId: prompt.id, promptTitle: prompt.title } });
+      }
       if (request.method === 'GET' && pathname === '/v1/style') return sendJson(response, 200, getStyle());
       if (request.method === 'GET' && pathname === '/v1/schedules') return sendJson(response, 200, { schedules: listSchedules() });
       const scheduleMatch = pathname.match(/^\/v1\/schedules\/([0-6])$/);
@@ -2981,14 +3559,15 @@ async function createStockPosition(input) {
   }
 
   return {
-    async listen(port = 4318) {
+    async listen(port = 4318, host = '127.0.0.1') {
       if (server) throw new Error('服务已经启动。');
       server = http.createServer(handle);
-      await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+      await new Promise((resolve) => server.listen(port, host, resolve));
       return server.address();
     },
     async close() {
       if (server) await new Promise((resolve) => server.close(resolve));
+      db.exec('DETACH DATABASE stock');
       db.close();
     },
     runMaintenance,

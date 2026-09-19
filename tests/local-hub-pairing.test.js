@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
 const { createContentHub } = require('../local-hub/src/content-hub.js');
+const { decryptBackup } = require('../local-hub/src/backup.js');
 
 test('扩展必须先用一次性配对码换取令牌，之后才能读取本机数据', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-pairing-'));
@@ -50,6 +51,25 @@ test('模型发现将联网模型列表仅返回给本机工作台', async () =>
     });
     assert.equal(response.status, 200);
     assert.deepEqual((await response.json()).models, ['model-a', 'model-b']);
+  } finally {
+    await hub.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+test('SQLite 凭证表不进入加密备份', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-credentials-backup-'));
+  const hub = createContentHub({ dataDirectory: directory });
+  const address = await hub.listen(0);
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/backups/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'backup-password' })
+    });
+    assert.equal(response.status, 201);
+    const archive = JSON.parse((await response.json()).archive);
+    const snapshot = decryptBackup(JSON.stringify(archive), 'backup-password');
+    assert.equal(Object.hasOwn(snapshot.tables, 'credentials'), false);
   } finally {
     await hub.close();
     fs.rmSync(directory, { recursive: true, force: true });

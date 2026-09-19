@@ -70,6 +70,41 @@ test('Finnhub 设置只返回配置状态且支持连接检测', async () => {
   });
 });
 
+test('Finnhub 设置使用 SQLite 凭证存储并使用官方 token 参数', async () => {
+  const { fetchConfiguredFinnhubQuote, writeFinnhubSettings } = require('../local-hub/src/finnhub.js');
+  const originalFetch = global.fetch;
+  const writes = [];
+  const requests = [];
+  let stored = null;
+  const credentialStore = {
+    get(name) {
+      assert.equal(name, 'finnhub-settings');
+      return stored;
+    },
+    set(name, value) {
+      writes.push({ name, value });
+      stored = value;
+    }
+  };
+  try {
+    await writeFinnhubSettings({ apiKey: 'test-key' }, credentialStore);
+    global.fetch = async (url) => {
+      requests.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({ c: 210.25, d: 1.5, dp: 0.72, t: 1787270400 })
+      };
+    };
+    const quote = await fetchConfiguredFinnhubQuote('AAPL', credentialStore);
+    assert.equal(quote.currentPrice, 210.25);
+    assert.equal(new URL(requests[0]).searchParams.get('token'), 'test-key');
+    assert.deepEqual(writes, [{ name: 'finnhub-settings', value: JSON.stringify({ apiKey: 'test-key' }) }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+
 test('刷新现价只更新美股持仓并保存报价时间', async () => {
   await withHub(async ({ baseUrl, fake }) => {
     await (await fetch(`${baseUrl}/finnhub-settings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: 'test-key' }) })).json();

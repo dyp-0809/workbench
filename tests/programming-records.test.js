@@ -756,7 +756,7 @@ test('GitHub Stars 导入安全处理凭证、分页、重叠预览与确认时�
     assert.deepEqual(configured.payload, { settings: { configured: true } });
     assert.equal(JSON.stringify(configured.payload).includes(token), false);
     assert.equal(storedToken, token);
-    assert.equal(fs.readFileSync(path.join(dataDirectory, 'x-assistant.sqlite')).includes(token), false);
+    assert.equal(fs.readFileSync(path.join(dataDirectory, 'workbench.sqlite')).includes(token), false);
     const backup = await request(baseUrl, '/v1/backups/export', {
       method: 'POST',
       body: JSON.stringify({ password: 'backup-password' })

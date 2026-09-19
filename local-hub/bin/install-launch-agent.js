@@ -7,13 +7,16 @@ const repositoryDirectory = path.resolve(__dirname, '..', '..');
 const label = 'com.x-assistant.content-hub';
 const launchAgentsDirectory = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const plistPath = path.join(launchAgentsDirectory, `${label}.plist`);
-const logsDirectory = path.join(os.homedir(), 'Library', 'Logs', 'X Assistant');
+const logsDirectory = path.join(os.homedir(), 'Library', 'Logs', 'workbench');
+const homeDirectory = os.homedir();
+const pathValue = process.env.PATH || '/usr/bin:/bin';
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${label}</string>
   <key>ProgramArguments</key><array><string>${process.execPath}</string><string>${path.join(repositoryDirectory, 'local-hub', 'src', 'main.js')}</string></array>
   <key>WorkingDirectory</key><string>${repositoryDirectory}</string>
+  <key>EnvironmentVariables</key><dict><key>HOME</key><string>${homeDirectory}</string><key>PATH</key><string>${pathValue}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>${path.join(logsDirectory, 'content-hub.log')}</string>
   <key>StandardErrorPath</key><string>${path.join(logsDirectory, 'content-hub.error.log')}</string>

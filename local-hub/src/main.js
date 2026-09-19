@@ -1,20 +1,35 @@
 const path = require('node:path');
+const os = require('node:os');
 const { createContentHub } = require('./content-hub.js');
 const { generateDailyCandidates } = require('./daily-generator.js');
+const { generateDailyTweets } = require('./tweet-generator.js');
+
 const { extractSemanticProfile } = require('./semantic-profile.js');
 const { discoverModels, getSafeModelSettings, writeModelSettings } = require('./model-settings.js');
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark.js');
+const { createOfficialMacroCalendarFetcher } = require('./official-calendar.js');
 const { fetchConfiguredFinnhubQuote, fetchConfiguredFinnhubValuation, getSafeFinnhubSettings, testFinnhubConnection, writeFinnhubSettings } = require('./finnhub.js');
 
 const port = Number(process.env.X_ASSISTANT_PORT || 4318);
+const host = process.env.X_ASSISTANT_HOST || '127.0.0.1';
+const skillSources = [
+  { id: 'global', label: '全局', directory: path.join(os.homedir(), '.claude', 'skills'), followSymlinks: true },
+  { id: 'pi', label: 'Pi', directory: path.join(os.homedir(), '.pi', 'agent', 'skills'), followSymlinks: true },
+  { id: 'omp', label: 'OMP', directory: path.join(os.homedir(), '.agents', 'skills'), followSymlinks: true },
+  { id: 'codex', label: 'Codex', directory: path.join(os.homedir(), '.codex', 'skills'), followSymlinks: true },
+  { id: 'hermes', label: 'Hermes', directory: path.join(os.homedir(), '.hermes', 'skills'), followSymlinks: true }
+];
 const hub = createContentHub({
   staticDirectory: path.join(__dirname, '..', '..', 'packages', 'shell', 'dist'),
+  skillSources,
   generator: generateDailyCandidates,
+  tweetGenerator: generateDailyTweets,
   semanticExtractor: extractSemanticProfile,
   modelSettings: { discover: discoverModels, get: getSafeModelSettings, set: writeModelSettings },
   barkSettings: { get: getSafeBarkSettings, set: writeBarkSettings },
   barkPusher: pushBarkNotification,
   finnhubSettings: { get: getSafeFinnhubSettings, set: writeFinnhubSettings, test: testFinnhubConnection },
+  officialCalendarFetcher: createOfficialMacroCalendarFetcher(),
   quoteFetcher: fetchConfiguredFinnhubQuote,
   valuationFetcher: fetchConfiguredFinnhubValuation
 });
@@ -28,8 +43,8 @@ async function runScheduledWork() {
 }
 
 async function start() {
-  const address = await hub.listen(port);
-  process.stderr.write(`X Assistant Content Hub 正在 http://127.0.0.1:${address.port} 运行\n`);
+  const address = await hub.listen(port, host);
+  process.stderr.write(`X Assistant Content Hub 正在 http://${host}:${address.port} 运行\n`);
   try {
     await runScheduledWork();
   } catch (error) {

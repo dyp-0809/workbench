@@ -37,6 +37,23 @@ test('配置 Bark 后返回配置状态', async () => {
   }, { barkSettings: bark.barkSettings });
 });
 
+test('到期项操作可手动发送 Bark 测试消息', async () => {
+  const bark = fakeBark();
+  await withHub(async ({ baseUrl }) => {
+    const created = await (await fetch(`${baseUrl}/v1/expiring-items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '域名续费', dueAt: '2026-08-20T10:00:00.000Z', notes: '测试通知' }) })).json();
+    await (await fetch(`${baseUrl}/v1/bark-settings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceKey: 'abc123' }) })).json();
+
+    const response = await fetch(`${baseUrl}/v1/expiring-items/${created.item.id}/test`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).result, { id: created.item.id, pushed: true });
+    assert.equal(bark.pushed[0].title, '到期提醒测试');
+    assert.match(bark.pushed[0].body, /^域名续费 · 2026-08-20 \d{2}:\d{2} · 测试通知$/);
+
+    const item = (await (await fetch(`${baseUrl}/v1/expiring-items`)).json()).items[0];
+    assert.equal(item.remindedAt, null);
+  }, { barkSettings: bark.barkSettings, barkPusher: bark.barkPusher });
+});
+
 test('到达提醒时间的到期项触发 Bark 推送', async () => {
   const bark = fakeBark();
   await withHub(async ({ baseUrl, hub }) => {

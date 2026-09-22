@@ -86,36 +86,39 @@ function StockStatsPage({ positions: externalPositions, soldPositions: externalS
   const totalAccent = totalUp ? 'var(--profit)' : 'var(--loss)';
 
   return (
-    <div className="flex flex-col gap-8">
-      <header className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-8">
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold">持仓总盈亏</h3>
-            <div className="mt-3 flex items-baseline gap-4">
-              <span className="text-[46px] font-bold leading-none tracking-tight tabular-nums" style={{ color: activeAccent }}><AnimatedSigned value={model.activePnl} /></span>
-              <span className="text-[20px] font-semibold tabular-nums" style={{ color: activeAccent }}><AnimatedSigned value={model.activePnlPercent * 100} suffix="%" /></span>
-            </div>
-            <p className="mt-3 text-sm text-foreground-muted tabular-nums">
-              成本 <NumberRoller value={model.totalCost} format={formatMoney} /> · 市值 <NumberRoller value={model.totalValue} format={formatMoney} /> · 持仓 <NumberRoller value={positionsForView.length} />
-            </p>
+    <div className="flex flex-col gap-7">
+      <div className="grid grid-cols-2 divide-x divide-border">
+        <div className="min-w-0 pr-8">
+          <p className="text-xs font-semibold text-foreground-muted">持仓总盈亏</p>
+          <div className="mt-3 flex items-baseline gap-4">
+            <span className="text-4xl font-bold leading-none tracking-tight tabular-nums" style={{ color: activeAccent }}><AnimatedSigned value={model.activePnl} /></span>
+            <span className="text-lg font-semibold tabular-nums" style={{ color: activeAccent }}><AnimatedSigned value={model.activePnlPercent * 100} suffix="%" /></span>
           </div>
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold">总盈亏（包含卖出的）</h3>
-            <div className="mt-3 flex items-baseline gap-4">
-              <span className="text-[46px] font-bold leading-none tracking-tight tabular-nums" style={{ color: totalAccent }}><AnimatedSigned value={model.totalPnlIncludingSold} /></span>
-              <span className="text-[20px] font-semibold tabular-nums" style={{ color: totalAccent }}><AnimatedSigned value={model.totalPnlIncludingSoldPercent * 100} suffix="%" /></span>
-            </div>
-            <p className="mt-3 text-sm text-foreground-muted tabular-nums">
-              持仓浮盈 <AnimatedSigned value={model.activePnl} /> · 已实现 <AnimatedSigned value={model.realizedPnl} /> · 卖出成本 <NumberRoller value={model.soldCost} format={formatMoney} />
-            </p>
-          </div>
+          <p className="mt-3 text-sm text-foreground-muted tabular-nums">
+            成本 <NumberRoller value={model.totalCost} format={formatMoney} /> · 市值 <NumberRoller value={model.totalValue} />
+          </p>
+          <p className="mt-1 text-xs text-foreground-muted">当前未平仓持仓的浮动盈亏</p>
         </div>
-      </header>
+        <div className="min-w-0 pl-8">
+          <p className="text-xs font-semibold text-foreground-muted">总盈亏（包含卖出的）</p>
+          <div className="mt-3 flex items-baseline gap-4">
+            <span className="text-4xl font-bold leading-none tracking-tight tabular-nums" style={{ color: totalAccent }}><AnimatedSigned value={model.totalPnlIncludingSold} /></span>
+            <span className="text-lg font-semibold tabular-nums" style={{ color: totalAccent }}><AnimatedSigned value={model.totalPnlIncludingSoldPercent * 100} suffix="%" /></span>
+          </div>
+          <p className="mt-3 text-sm text-foreground-muted tabular-nums">
+            持仓浮盈 <AnimatedSigned value={model.activePnl} /> · 已实现 <AnimatedSigned value={model.realizedPnl} />
+          </p>
+          <p className="mt-1 text-xs text-foreground-muted">已实现盈亏与当前持仓浮动盈亏合计</p>
+        </div>
+      </div>
 
-      <section className="rounded-xl border border-border px-4 pb-5 pt-4">
+      <section className="border-t border-border pt-5">
         <div className="mb-4 flex items-baseline justify-between gap-4">
-          <h3 className="text-sm font-semibold">持仓盈亏光谱</h3>
-          <span className="text-[11px] text-foreground-muted">按盈亏幅度排序 · 线上盈利，线下亏损</span>
+          <div>
+            <h3 className="text-sm font-semibold text-pretty">持仓盈亏光谱</h3>
+            <p className="mt-1 text-xs text-foreground-muted">按盈亏幅度排序，快速定位贡献与拖累。</p>
+          </div>
+          <span className="whitespace-nowrap text-[11px] text-foreground-muted">绿色盈利 · 红色亏损</span>
         </div>
         {model.sorted.length ? (
           <div className="relative" style={{ height: '14rem', overflowX: 'auto' }}>

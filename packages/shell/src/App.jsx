@@ -37,16 +37,18 @@ import { KindlePage } from '@personal-workbench/module-kindle';
 import { ProgrammingRecordsPage } from '@personal-workbench/module-records';
 import { AIDashboardPage, PromptPage, SkillsPage } from '@personal-workbench/module-ai';
 import { StockEntryPlansPage, StockMarketPage, StockPositionsPage, StockEventsPage } from '@personal-workbench/module-stock';
+import { OverseasPage } from '@personal-workbench/module-overseas';
 
 const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const MENU_STORAGE_KEY = 'x-assistant-navigation';
-const menuIconOptions = { LayoutGrid, Home, Checklist, Alarm, ChartCandle, Target, ChartLine, Wallet, BrandX, LayoutDashboard, Book, FileText, Archive, Box, History, Palette, ChartPie, Settings, Books, CalendarEvent, Bolt };
+const menuIconOptions = { LayoutGrid, Home, Checklist, Alarm, ChartCandle, Target, ChartLine, Wallet, BrandX, LayoutDashboard, Book, FileText, Archive, Box, History, Palette, ChartPie, Settings, Books, CalendarEvent, Bolt, Database };
 const defaultNavigationGroups = [
   { id: 'general', items: [
     { key: 'dashboard-v2', label: '首页', iconName: 'Home' },
     { key: 'tasks', label: '待办事项', iconName: 'Checklist' },
     { key: 'expiring', label: '到期与提醒', iconName: 'Alarm' },
-    { key: 'kindle', label: 'Kindle', iconName: 'Books' }
+    { key: 'kindle', label: 'Kindle', iconName: 'Books' },
+    { key: 'overseas', label: '出海', iconName: 'Database' }
   ] },
   { id: 'stock', label: '股票', iconName: 'ChartCandle', items: [
     { key: 'stock-entry-plans', label: '待开仓股票', iconName: 'Target' },
@@ -141,9 +143,9 @@ const GROUP_KEYS = { x: X_ASSISTANT_KEYS, stock: STOCK_KEYS, health: HEALTH_KEYS
 const pageLabels = new Map([
   ['dashboard-v2', '首页'], ['tasks', '待办事项'], ['expiring', '到期与提醒'], ['x-overview', 'X 概览'], ['daily-tweets', '每日推文'], ['library', '内容库'], ['archive', '内容归档'], ['materials', '素材库'],
   ['kindle', 'Kindle'],
-  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-events', '重要事件'], ['stock-positions', '仓位管理'], ['menstrual-cycle', '经期'], ['programming-records', '记录'], ['ai-overview', 'AI 总览'], ['ai-prompts', '提示词'], ['ai-skills', 'Skills'], ['settings', '设置']
+  ['replies', '回复历史'], ['style', '个人风格'], ['analytics-v2', '数据统计'], ['stock-entry-plans', '待开仓股票'], ['stock-market', '市场'], ['stock-events', '重要事件'], ['stock-positions', '仓位管理'], ['overseas', '出海'], ['menstrual-cycle', '经期'], ['programming-records', '记录'], ['ai-overview', 'AI 总览'], ['ai-prompts', '提示词'], ['ai-skills', 'Skills'], ['settings', '设置']
 ]);
-const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'x-overview': '/x-overview', 'daily-tweets': '/daily-tweets', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-events': '/stock/events', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'programming-records': '/programming/records', 'ai-overview': '/ai', 'ai-prompts': '/ai/prompts', 'ai-skills': '/ai/skills', 'settings': '/settings' };
+const PAGE_PATHS = { 'dashboard-v2': '/', 'tasks': '/tasks', 'expiring': '/expiring', 'kindle': '/kindle', 'overseas': '/overseas', 'x-overview': '/x-overview', 'daily-tweets': '/daily-tweets', 'library': '/library', 'archive': '/archive', 'materials': '/materials', 'replies': '/replies', 'style': '/style', 'analytics-v2': '/analytics', 'stock-entry-plans': '/stock/entry-plans', 'stock-market': '/stock/market', 'stock-events': '/stock/events', 'stock-positions': '/stock/positions', 'menstrual-cycle': '/health/menstrual-cycle', 'programming-records': '/programming/records', 'ai-overview': '/ai', 'ai-prompts': '/ai/prompts', 'ai-skills': '/ai/skills', 'settings': '/settings' };
 function pageFromPath(pathname) {
   if (pathname === '/stock/stats') return 'stock-positions';
   const entry = Object.entries(PAGE_PATHS).find(([, path]) => path === pathname);
@@ -384,7 +386,7 @@ function AppInner() {
         <header className={`page-header shrink-0 ${page.startsWith('ai-') || page === 'daily-tweets' ? 'page-header-ai' : ''}`}>
           <div>
             <h1>{headerTitle} <time className="dashboard-clock" dateTime={now.toISOString()}><NumberRoller value={now.getHours() * 60 + now.getMinutes()} format={formatClockValue} ariaLabel={now.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })} /></time></h1>
-            <p className="text-foreground-muted">{page === 'dashboard-v2' ? `今天的重点、时间线与下一步行动都在这里${lunarToday ? ` · ${lunarToday}` : ''}` : page === 'settings' && settingsSection === 'navigation' ? '调整工作台主导航的分组、顺序与图标；变化会自动保存在当前浏览器' : '内容、素材与互动记录仅保留在本机；模型密钥由 SQLite 管理'}</p>
+            <p className="text-foreground-muted">{page === 'dashboard-v2' ? `今天的重点、时间线与下一步行动都在这里${lunarToday ? ` · ${lunarToday}` : ''}` : page === 'settings' && settingsSection === 'navigation' ? '调整工作台主导航的分组、顺序与图标；变化会自动保存在当前浏览器' : page === 'overseas' ? '在需要时，直接进入网络、通信或支付服务；所有信息只保存在本机。' : '内容、素材与互动记录仅保留在本机；模型密钥由 SQLite 管理'}</p>
           </div>
           {pendingRequestIds.size > 0 && (
             <div className="page-header-actions flex items-center gap-2">
@@ -399,6 +401,7 @@ function AppInner() {
             {page === 'x-overview' && dashboard && <XOverviewPage dashboard={dashboard} candidateEvent={candidateEvent} candidatePlan={candidatePlan} />}
             {page === 'daily-tweets' && <DailyTweetsPage modelSettings={modelSettings} onNavigate={(target) => { if (target === 'settings') setSettingsSection('model'); navigate(target); }} onDirtyChange={setDailyTweetsDirty} />}
             {page === 'expiring' && <ExpiringItemsPage focusId={navigationTarget?.page === 'expiring' ? navigationTarget.entityId : null} />}
+            {page === 'overseas' && <OverseasPage />}
             {page === 'tasks' && <TaskPage focusId={navigationTarget?.page === 'tasks' ? navigationTarget.entityId : null} />}
             {page === 'library' && <LibraryPage topics={topics} filters={filters} setFilters={setFilters} packs={packs} filteredPacks={filteredPacks} candidateArchive={archiveCandidateCopy} candidateEvent={candidateEvent} candidatePlan={candidatePlan} focusId={navigationTarget?.page === 'library' ? navigationTarget.entityId : null} />}
             {page === 'archive' && <ContentArchivePage entries={contentArchive} onPerformance={setArchivePerformance} />}

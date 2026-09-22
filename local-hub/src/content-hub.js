@@ -575,6 +575,24 @@ function initializeSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS prompts_updated
       ON prompts(updated_at DESC);
+    CREATE TABLE IF NOT EXISTS overseas_items (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK(type IN ('vpn', 'sim', 'finance')),
+      name TEXT NOT NULL,
+      url TEXT NOT NULL DEFAULT '',
+      area_code TEXT NOT NULL DEFAULT '',
+      phone_number TEXT NOT NULL DEFAULT '',
+      purchased_at TEXT,
+      plan_details TEXT NOT NULL DEFAULT '',
+      expires_at TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      purpose TEXT NOT NULL DEFAULT '',
+      owned INTEGER NOT NULL DEFAULT 0 CHECK(owned IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS overseas_items_type_updated
+      ON overseas_items(type, updated_at DESC);
     CREATE TABLE IF NOT EXISTS skill_notes (
       skill_id TEXT PRIMARY KEY,
       note TEXT NOT NULL,
@@ -3197,6 +3215,72 @@ async function createStockPosition(input) {
     return { restoredAt: now().toISOString(), tableCount: availableTables.size + availableStockTables.size };
   }
 
+  function normalizeOverseasItem(input = {}, existing = {}) {
+    const type = input.type === undefined ? existing.type : normalizePromptText(input.type, 20);
+    if (!['vpn', 'sim', 'finance'].includes(type)) throw new Error('出海服务类型无效。');
+    const name = input.name === undefined ? existing.name : normalizePromptText(input.name, 120);
+    if (!name) throw new Error('名称不能为空。');
+    const date = (value, field) => {
+      if (value === undefined) return existing[field] || null;
+      if (value === null || value === '') return null;
+      const normalized = normalizePromptText(value, 40);
+      if (Number.isNaN(new Date(normalized).getTime())) throw new Error(`${field} 日期无效。`);
+      return normalized;
+    };
+    const owned = input.owned === undefined ? Boolean(existing.owned) : input.owned;
+    if (typeof owned !== 'boolean') throw new Error('持有状态必须是布尔值。');
+    return {
+      type, name,
+      url: input.url === undefined ? (existing.url || '') : normalizePromptText(input.url, 1000),
+      areaCode: input.areaCode === undefined ? (existing.area_code || '') : normalizePromptText(input.areaCode, 20),
+      phoneNumber: input.phoneNumber === undefined ? (existing.phone_number || '') : normalizePromptText(input.phoneNumber, 80),
+      purchasedAt: date(input.purchasedAt, 'purchased_at'),
+      planDetails: input.planDetails === undefined ? (existing.plan_details || '') : normalizePromptText(input.planDetails, 2000),
+      expiresAt: date(input.expiresAt, 'expires_at'),
+      notes: input.notes === undefined ? (existing.notes || '') : normalizePromptText(input.notes, 2000),
+      purpose: input.purpose === undefined ? (existing.purpose || '') : normalizePromptText(input.purpose, 500),
+      owned
+    };
+  }
+
+  function mapOverseasItem(row) {
+    return {
+      id: row.id, type: row.type, name: row.name, url: row.url, areaCode: row.area_code,
+      phoneNumber: row.phone_number, purchasedAt: row.purchased_at, planDetails: row.plan_details,
+      expiresAt: row.expires_at, notes: row.notes, purpose: row.purpose, owned: Boolean(row.owned),
+      createdAt: row.created_at, updatedAt: row.updated_at
+    };
+  }
+
+  function listOverseasItems() {
+    return db.prepare('SELECT * FROM overseas_items ORDER BY type, updated_at DESC').all().map(mapOverseasItem);
+  }
+
+  function createOverseasItem(input) {
+    const item = normalizeOverseasItem(input);
+    const timestamp = asIso(undefined, now());
+    const record = { id: createId(), ...item, createdAt: timestamp, updatedAt: timestamp };
+    db.prepare(`INSERT INTO overseas_items(
+      id, type, name, url, area_code, phone_number, purchased_at, plan_details, expires_at, notes, purpose, owned, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(record.id, record.type, record.name, record.url, record.areaCode, record.phoneNumber, record.purchasedAt, record.planDetails, record.expiresAt, record.notes, record.purpose, Number(record.owned), record.createdAt, record.updatedAt);
+    return mapOverseasItem(db.prepare('SELECT * FROM overseas_items WHERE id = ?').get(record.id));
+  }
+
+  function updateOverseasItem(id, input) {
+    const existing = db.prepare('SELECT * FROM overseas_items WHERE id = ?').get(id);
+    if (!existing) return null;
+    const item = normalizeOverseasItem(input, existing);
+    const updatedAt = asIso(undefined, now());
+    db.prepare(`UPDATE overseas_items SET type = ?, name = ?, url = ?, area_code = ?, phone_number = ?, purchased_at = ?, plan_details = ?, expires_at = ?, notes = ?, purpose = ?, owned = ?, updated_at = ? WHERE id = ?`)
+      .run(item.type, item.name, item.url, item.areaCode, item.phoneNumber, item.purchasedAt, item.planDetails, item.expiresAt, item.notes, item.purpose, Number(item.owned), updatedAt, id);
+    return mapOverseasItem(db.prepare('SELECT * FROM overseas_items WHERE id = ?').get(id));
+  }
+
+  function deleteOverseasItem(id) {
+    return db.prepare('DELETE FROM overseas_items WHERE id = ?').run(id).changes > 0;
+  }
+
   function sendJson(response, status, payload) {
     const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
     if (response.extensionOrigin) Object.assign(headers, { 'Access-Control-Allow-Origin': response.extensionOrigin, 'Access-Control-Allow-Headers': 'Authorization, Content-Type', Vary: 'Origin' });
@@ -3392,6 +3476,16 @@ async function createStockPosition(input) {
           : sendJson(response, 200, result);
       }
       if (programmingRecordMatch && request.method === 'DELETE') return deleteProgrammingRecord(programmingRecordMatch[1]) ? sendJson(response, 204, {}) : sendJson(response, 404, { error: '编程记录不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/overseas-items') return sendJson(response, 200, { items: listOverseasItems() });
+      if (request.method === 'POST' && pathname === '/v1/overseas-items') return sendJson(response, 201, { item: createOverseasItem(await parseRequest(request)) });
+      const overseasItemMatch = pathname.match(/^\/v1\/overseas-items\/([^/]+)$/);
+      if (overseasItemMatch && request.method === 'PATCH') {
+        const item = updateOverseasItem(overseasItemMatch[1], await parseRequest(request));
+        return item ? sendJson(response, 200, { item }) : sendJson(response, 404, { error: '出海服务不存在。' });
+      }
+      if (overseasItemMatch && request.method === 'DELETE') return deleteOverseasItem(overseasItemMatch[1])
+        ? sendJson(response, 204, {})
+        : sendJson(response, 404, { error: '出海服务不存在。' });
       if (request.method === 'POST' && pathname === '/v1/expiring-items') return sendJson(response, 201, { item: createExpiringItem(await parseRequest(request)) });
       const expiringItemMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)$/);
       if (expiringItemMatch && request.method === 'PATCH') {

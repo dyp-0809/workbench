@@ -7,6 +7,7 @@
 @source '../../module-stock/src';
 @source '../../module-records/src';
 @source '../../module-ai/src';
+@source '../../module-overseas/src';
 @source './lib';
 
 @theme inline {

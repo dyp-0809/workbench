@@ -54,6 +54,14 @@ test('工作台通过服务创建定位和素材，并在概览中读取同一�
   });
 });
 
+test('到期项页面的首屏列表接口返回空数组', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const expiringItems = await request(baseUrl, '/v1/expiring-items');
+    assert.equal(expiringItems.response.status, 200);
+    assert.deepEqual(expiringItems.payload, { items: [] });
+  });
+});
+
 test('无合法候选时首页提示返回诚实空态', async () => {
   await withHub(async ({ baseUrl }) => {
     const dashboard = await request(baseUrl, '/v1/dashboard');

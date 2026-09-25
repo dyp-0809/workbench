@@ -3555,6 +3555,7 @@ async function createStockPosition(input) {
       if (overseasItemMatch && request.method === 'DELETE') return deleteOverseasItem(overseasItemMatch[1])
         ? sendJson(response, 204, {})
         : sendJson(response, 404, { error: '出海服务不存在。' });
+      if (request.method === 'GET' && pathname === '/v1/expiring-items') return sendJson(response, 200, { items: listExpiringItems() });
       if (request.method === 'POST' && pathname === '/v1/expiring-items') return sendJson(response, 201, { item: createExpiringItem(await parseRequest(request)) });
       const expiringItemMatch = pathname.match(/^\/v1\/expiring-items\/([^/]+)$/);
       if (expiringItemMatch && request.method === 'PATCH') {

@@ -23,6 +23,7 @@ test('旧日期级到期项迁移为单次模式并保留提前天数', async ()
   const address = await hub.listen(0);
   try {
     const response = await fetch(`http://127.0.0.1:${address.port}/v1/expiring-items`);
+    assert.equal(response.status, 200);
     const items = (await response.json()).items;
     assert.equal(items.length, 1);
     assert.equal(items[0].mode, 'once');

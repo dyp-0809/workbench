@@ -3670,6 +3670,12 @@ async function createStockPosition(input) {
         const result = await tweetGenerator({ ...input, prompt, credentialStore });
         return sendJson(response, 201, { result: { ...result, promptId: prompt.id, promptTitle: prompt.title } });
       }
+      if (request.method === 'POST' && pathname === '/v1/daily-tweets/remix') {
+        if (typeof tweetGenerator !== 'function') return sendJson(response, 503, { error: '推文生成服务尚未配置。' });
+        const input = await parseRequest(request);
+        const result = await tweetGenerator({ ...input, credentialStore });
+        return sendJson(response, 201, { result: { ...result, promptTitle: '推文二创' } });
+      }
       if (request.method === 'GET' && pathname === '/v1/style') return sendJson(response, 200, getStyle());
       if (request.method === 'GET' && pathname === '/v1/schedules') return sendJson(response, 200, { schedules: listSchedules() });
       const scheduleMatch = pathname.match(/^\/v1\/schedules\/([0-6])$/);

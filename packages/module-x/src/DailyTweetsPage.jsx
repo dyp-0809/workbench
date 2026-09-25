@@ -49,6 +49,11 @@ function DailyTweetsPage({ onNavigate, onDirtyChange, modelSettings }) {
   const [generating, setGenerating] = useState(false);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   const [tweetDetailOpen, setTweetDetailOpen] = useState(false);
+  const [remixOpen, setRemixOpen] = useState(false);
+  const [remixSource, setRemixSource] = useState('');
+  const [remixInstruction, setRemixInstruction] = useState('');
+  const [remixCount, setRemixCount] = useState('3');
+  const [remixLanguageMode, setRemixLanguageMode] = useState('both');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [copiedId, setCopiedId] = useState('');
@@ -60,6 +65,7 @@ function DailyTweetsPage({ onNavigate, onDirtyChange, modelSettings }) {
   const selectedPrompt = useMemo(() => prompts.find((prompt) => prompt.id === selectedPromptId) || null, [prompts, selectedPromptId]);
   const isDirty = Boolean(selectedPrompt && promptDraft !== savedPromptContent);
   const expectedCount = Number(count) * LANGUAGE_MODES[languageMode].languages.length;
+  const remixExpectedCount = Number(remixCount) * LANGUAGE_MODES[remixLanguageMode].languages.length;
   const tweetGroups = useMemo(() => groupTweets(tweets, generatedLanguageMode), [tweets, generatedLanguageMode]);
   const detailTweets = useMemo(() => tweetGroups.flatMap((group, index) => (
     [['zh', group.zh], ['en', group.en]]
@@ -177,6 +183,28 @@ function DailyTweetsPage({ onNavigate, onDirtyChange, modelSettings }) {
     }
   }
 
+  async function generateRemix() {
+    if (!remixSource.trim()) return;
+    setGenerating(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await api('/daily-tweets/remix', {
+        method: 'POST',
+        body: JSON.stringify({ sourceTweet: remixSource, instruction: remixInstruction, count: Number(remixCount), languages: LANGUAGE_MODES[remixLanguageMode].languages })
+      });
+      const nextTweets = result.result?.tweets || [];
+      setTweets(nextTweets);
+      setGeneratedLanguageMode(remixLanguageMode);
+      setRemixOpen(false);
+      setNotice(`已基于参考推文生成 ${nextTweets.length} 条语言稿。`);
+    } catch (generationError) {
+      setError(generationError.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   async function copyText(text, id) {
     try {
       if (!await copyToClipboard(text)) throw new Error('复制失败');
@@ -208,9 +236,12 @@ function DailyTweetsPage({ onNavigate, onDirtyChange, modelSettings }) {
           <h1>每日推文</h1>
           <p>把提示词、生成参数和可编辑草稿串成一条生产线。</p>
         </div>
-        <div className="x-daily-tweets-hero-stat" aria-label={`本次已生成 ${tweetGroups.length} 个推文版本`}>
-          <strong className="tabular-nums">{tweetGroups.length}</strong>
-          <span>{generatedLanguageMode === 'both' ? '双语版本' : '本次版本'}</span>
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="outline" onClick={() => setRemixOpen(true)} disabled={generating}><FileText aria-hidden="true" data-icon="start" />推文二创</Button>
+          <div className="x-daily-tweets-hero-stat" aria-label={`本次已生成 ${tweetGroups.length} 个推文版本`}>
+            <strong className="tabular-nums">{tweetGroups.length}</strong>
+            <span>{generatedLanguageMode === 'both' ? '双语版本' : '本次版本'}</span>
+          </div>
         </div>
       </header>
 
@@ -388,6 +419,48 @@ function DailyTweetsPage({ onNavigate, onDirtyChange, modelSettings }) {
           )}
         </section>
       </div>
+      <Dialog open={remixOpen} onOpenChange={(open) => { if (!generating) setRemixOpen(open); }}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>推文二创</DialogTitle>
+            <DialogDescription>粘贴参考推文，补充改写要求后生成独立草稿；参考内容只作为素材，不会被照抄。</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="flex flex-col gap-5">
+              <Field>
+                <FieldLabel>参考推文</FieldLabel>
+                <Textarea name="tweet-remix-source" autoComplete="off" rows={8} value={remixSource} onChange={(event) => setRemixSource(event.target.value)} placeholder="粘贴要二创的推文…" disabled={generating} />
+              </Field>
+              <Field>
+                <FieldLabel>二创要求</FieldLabel>
+                <Textarea name="tweet-remix-instruction" autoComplete="off" rows={3} value={remixInstruction} onChange={(event) => setRemixInstruction(event.target.value)} placeholder="可选：如改为更直接的观点、补充行动建议或换一个切入角度…" disabled={generating} />
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field>
+                  <FieldLabel>每种语言生成</FieldLabel>
+                  <Select value={remixCount} onValueChange={setRemixCount} disabled={generating}>
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>{Object.entries(COUNT_ITEMS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel>生成语言</FieldLabel>
+                  <Tabs value={remixLanguageMode} onValueChange={setRemixLanguageMode}>
+                    <TabsList aria-label="选择二创生成语言">
+                      {Object.entries(LANGUAGE_MODES).map(([value, mode]) => <TabsTrigger key={value} value={value}>{mode.label}</TabsTrigger>)}
+                    </TabsList>
+                  </Tabs>
+                </Field>
+              </div>
+              <p className="text-sm text-foreground-muted">会把参考推文、二创要求、语言与数量组装为提示词，预计生成 {remixExpectedCount} 条语言稿。</p>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="soft" disabled={generating} onClick={() => setRemixOpen(false)}>取消</Button>
+            <LoadingButton type="button" loading={generating} disabled={!remixSource.trim()} onClick={() => void generateRemix()}><FileText aria-hidden="true" data-icon="start" />生成二创推文</LoadingButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={promptEditorOpen} onOpenChange={setPromptEditorOpen}>
         <DialogContent className="x-daily-tweets-prompt-dialog">
           <DialogHeader>

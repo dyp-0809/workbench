@@ -285,6 +285,11 @@ function normalizePublishTime(value, label) {
   return time;
 }
 
+function migrateOverseasItems(db) {
+  const columns = db.prepare('PRAGMA table_info(overseas_items)').all().map((column) => column.name);
+  if (!columns.includes('card_color')) db.exec('ALTER TABLE overseas_items ADD COLUMN card_color TEXT');
+}
+
 function migrateExpiringItems(db) {
   const columns = db.prepare('PRAGMA table_info(expiring_items)').all().map((column) => column.name);
   if (!columns.includes('mode')) {
@@ -591,6 +596,7 @@ function initializeSchema(db) {
       notes TEXT NOT NULL DEFAULT '',
       purpose TEXT NOT NULL DEFAULT '',
       owned INTEGER NOT NULL DEFAULT 0 CHECK(owned IN (0, 1)),
+      card_color TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -785,6 +791,7 @@ function initializeSchema(db) {
     CREATE INDEX IF NOT EXISTS programming_record_tag_links_tag
       ON programming_record_tag_links(tag_id, record_id);
   `);
+  migrateOverseasItems(db);
   migrateExpiringItems(db);
   migrateGenerationSchedules(db);
   migratePrompts(db);
@@ -3287,6 +3294,8 @@ async function createStockPosition(input) {
     };
     const owned = input.owned === undefined ? Boolean(existing.owned) : input.owned;
     if (typeof owned !== 'boolean') throw new Error('持有状态必须是布尔值。');
+    const cardColor = input.cardColor === undefined ? (existing.card_color || null) : normalizePromptText(input.cardColor, 20);
+    if (cardColor && !['primary', 'info', 'success', 'warning'].includes(cardColor)) throw new Error('银行卡颜色无效。');
     return {
       type, name,
       url: input.url === undefined ? (existing.url || '') : normalizePromptText(input.url, 1000),
@@ -3297,7 +3306,8 @@ async function createStockPosition(input) {
       expiresAt: date(input.expiresAt, 'expires_at'),
       notes: input.notes === undefined ? (existing.notes || '') : normalizePromptText(input.notes, 2000),
       purpose: input.purpose === undefined ? (existing.purpose || '') : normalizePromptText(input.purpose, 500),
-      owned
+      owned,
+      cardColor: type === 'finance' ? cardColor : null
     };
   }
 
@@ -3305,7 +3315,7 @@ async function createStockPosition(input) {
     return {
       id: row.id, type: row.type, name: row.name, url: row.url, areaCode: row.area_code,
       phoneNumber: row.phone_number, purchasedAt: row.purchased_at, planDetails: row.plan_details,
-      expiresAt: row.expires_at, notes: row.notes, purpose: row.purpose, owned: Boolean(row.owned),
+      expiresAt: row.expires_at, notes: row.notes, purpose: row.purpose, owned: Boolean(row.owned), cardColor: row.card_color || 'primary',
       createdAt: row.created_at, updatedAt: row.updated_at
     };
   }
@@ -3316,12 +3326,13 @@ async function createStockPosition(input) {
 
   function createOverseasItem(input) {
     const item = normalizeOverseasItem(input);
+    if (item.type === 'finance' && !item.cardColor) item.cardColor = ['primary', 'info', 'success', 'warning'][db.prepare("SELECT COUNT(*) AS count FROM overseas_items WHERE type = 'finance'").get().count % 4];
     const timestamp = asIso(undefined, now());
     const record = { id: createId(), ...item, createdAt: timestamp, updatedAt: timestamp };
     db.prepare(`INSERT INTO overseas_items(
-      id, type, name, url, area_code, phone_number, purchased_at, plan_details, expires_at, notes, purpose, owned, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(record.id, record.type, record.name, record.url, record.areaCode, record.phoneNumber, record.purchasedAt, record.planDetails, record.expiresAt, record.notes, record.purpose, Number(record.owned), record.createdAt, record.updatedAt);
+      id, type, name, url, area_code, phone_number, purchased_at, plan_details, expires_at, notes, purpose, owned, card_color, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(record.id, record.type, record.name, record.url, record.areaCode, record.phoneNumber, record.purchasedAt, record.planDetails, record.expiresAt, record.notes, record.purpose, Number(record.owned), record.cardColor, record.createdAt, record.updatedAt);
     return mapOverseasItem(db.prepare('SELECT * FROM overseas_items WHERE id = ?').get(record.id));
   }
 
@@ -3330,8 +3341,8 @@ async function createStockPosition(input) {
     if (!existing) return null;
     const item = normalizeOverseasItem(input, existing);
     const updatedAt = asIso(undefined, now());
-    db.prepare(`UPDATE overseas_items SET type = ?, name = ?, url = ?, area_code = ?, phone_number = ?, purchased_at = ?, plan_details = ?, expires_at = ?, notes = ?, purpose = ?, owned = ?, updated_at = ? WHERE id = ?`)
-      .run(item.type, item.name, item.url, item.areaCode, item.phoneNumber, item.purchasedAt, item.planDetails, item.expiresAt, item.notes, item.purpose, Number(item.owned), updatedAt, id);
+    db.prepare(`UPDATE overseas_items SET type = ?, name = ?, url = ?, area_code = ?, phone_number = ?, purchased_at = ?, plan_details = ?, expires_at = ?, notes = ?, purpose = ?, owned = ?, card_color = ?, updated_at = ? WHERE id = ?`)
+      .run(item.type, item.name, item.url, item.areaCode, item.phoneNumber, item.purchasedAt, item.planDetails, item.expiresAt, item.notes, item.purpose, Number(item.owned), item.cardColor, updatedAt, id);
     return mapOverseasItem(db.prepare('SELECT * FROM overseas_items WHERE id = ?').get(id));
   }
 

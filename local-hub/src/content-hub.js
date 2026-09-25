@@ -303,23 +303,20 @@ function migrateExpiringItems(db) {
     db.exec('ALTER TABLE expiring_items ADD COLUMN reminded_at TEXT');
   }
 }
-function migrateStockPositions(db) {
-  const columns = db.prepare('PRAGMA table_info(stock_positions)').all().map((column) => column.name);
-  if (!columns.includes('target_percent')) {
-    db.exec('ALTER TABLE stock_positions ADD COLUMN target_percent REAL');
-  }
-  if (!columns.includes('price_updated_at')) {
-    db.exec('ALTER TABLE stock_positions ADD COLUMN price_updated_at TEXT');
-  }
-  if (!columns.includes('trailing_pe')) {
-    db.exec('ALTER TABLE stock_positions ADD COLUMN trailing_pe REAL');
-  }
-  if (!columns.includes('forward_pe')) {
-    db.exec('ALTER TABLE stock_positions ADD COLUMN forward_pe REAL');
-  }
-  if (!columns.includes('market_error')) {
-    db.exec('ALTER TABLE stock_positions ADD COLUMN market_error TEXT');
-  }
+function migrateStockPositions(db, schema = 'main') {
+  const columns = db.prepare(`PRAGMA ${schema}.table_info(stock_positions)`).all().map((column) => column.name);
+  if (!columns.includes('target_percent')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN target_percent REAL`);
+  if (!columns.includes('price_updated_at')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN price_updated_at TEXT`);
+  if (!columns.includes('trailing_pe')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN trailing_pe REAL`);
+  if (!columns.includes('forward_pe')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN forward_pe REAL`);
+  if (!columns.includes('market_error')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN market_error TEXT`);
+  if (!columns.includes('iopv')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN iopv REAL`);
+  if (!columns.includes('asset_type')) db.exec(`ALTER TABLE ${schema}.stock_positions ADD COLUMN asset_type TEXT NOT NULL DEFAULT 'stock'`);
+}
+
+function migrateStockSoldPositions(db, schema = 'main') {
+  const columns = db.prepare(`PRAGMA ${schema}.table_info(stock_sold_positions)`).all().map((column) => column.name);
+  if (!columns.includes('asset_type')) db.exec(`ALTER TABLE ${schema}.stock_sold_positions ADD COLUMN asset_type TEXT NOT NULL DEFAULT 'stock'`);
 }
 
 function migrateStockEntryPlans(db) {
@@ -330,6 +327,12 @@ function migrateStockEntryPlans(db) {
   if (!columns.includes('market_status')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_status TEXT');
   if (!columns.includes('market_updated_at')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_updated_at TEXT');
   if (!columns.includes('market_error')) db.exec('ALTER TABLE stock_entry_plans ADD COLUMN market_error TEXT');
+}
+
+function migrateStockSettings(db, schema = 'main') {
+  const columns = db.prepare(`PRAGMA ${schema}.table_info(stock_settings)`).all().map((column) => column.name);
+  if (!columns.includes('cn_total_assets')) db.exec(`ALTER TABLE ${schema}.stock_settings ADD COLUMN cn_total_assets REAL NOT NULL DEFAULT 0`);
+  if (!columns.includes('crypto_total_assets')) db.exec(`ALTER TABLE ${schema}.stock_settings ADD COLUMN crypto_total_assets REAL NOT NULL DEFAULT 0`);
 }
 function migrateContentCandidates(db) {
   const columns = db.prepare('PRAGMA table_info(content_candidates)').all().map((column) => column.name);
@@ -820,12 +823,13 @@ function createDataDirectories(options) {
   if (!customDataDirectory) migrateLegacyDataDirectory(dataDirectory, path.join(homeDirectory, 'Library', 'Application Support', 'X Assistant'));
   return dataDirectory;
 }
-const STOCK_TABLES = ['stock_positions', 'stock_sold_positions', 'stock_entry_plans', 'stock_settings', 'stock_symbols', 'stock_alert_rules', 'stock_alert_snapshots', 'stock_alert_deliveries'];
+const STOCK_TABLES = ['stock_positions', 'stock_sold_positions', 'stock_deposits', 'stock_entry_plans', 'stock_settings', 'stock_symbols', 'stock_alert_rules', 'stock_alert_snapshots', 'stock_alert_deliveries'];
 const STOCK_TABLE_COLUMNS = {
-  stock_positions: 'id, symbol, name, market, quantity, cost_price, current_price, notes, created_at, updated_at, target_percent, price_updated_at, trailing_pe, forward_pe, market_error',
-  stock_sold_positions: 'id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at',
+  stock_positions: 'id, symbol, name, market, quantity, cost_price, current_price, notes, created_at, updated_at, target_percent, price_updated_at, trailing_pe, forward_pe, market_error, iopv, asset_type',
+  stock_sold_positions: 'id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at, asset_type',
+  stock_deposits: 'id, market, amount, notes, created_at',
   stock_entry_plans: 'id, symbol, name, market, entry_price, target_percent, notes, created_at, updated_at, current_price, trailing_pe, forward_pe, market_status, market_updated_at, market_error',
-  stock_settings: 'id, total_assets, updated_at',
+  stock_settings: 'id, total_assets, cn_total_assets, crypto_total_assets, updated_at',
   stock_symbols: 'symbol, name, market, is_default, created_at, updated_at',
   stock_alert_rules: 'id, payload, updated_at',
   stock_alert_snapshots: 'symbol, trading_date, change_percent, captured_at',
@@ -839,7 +843,9 @@ function hasTable(db, schema, table) {
 function initializeStockDatabase(db, stockDatabasePath) {
   const legacyTables = STOCK_TABLES.filter((table) => hasTable(db, 'main', table));
   if (legacyTables.includes('stock_positions')) migrateStockPositions(db);
+  if (legacyTables.includes('stock_sold_positions')) migrateStockSoldPositions(db);
   if (legacyTables.includes('stock_entry_plans')) migrateStockEntryPlans(db);
+  if (legacyTables.includes('stock_settings')) migrateStockSettings(db);
 
   db.prepare('ATTACH DATABASE ? AS stock').run(stockDatabasePath);
   db.exec(`
@@ -848,13 +854,19 @@ function initializeStockDatabase(db, stockDatabasePath) {
       market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')), quantity REAL NOT NULL,
       cost_price REAL NOT NULL, current_price REAL NOT NULL, notes TEXT NOT NULL,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL, target_percent REAL,
-      price_updated_at TEXT, trailing_pe REAL, forward_pe REAL, market_error TEXT
+      price_updated_at TEXT, trailing_pe REAL, forward_pe REAL, market_error TEXT, iopv REAL,
+      asset_type TEXT NOT NULL DEFAULT 'stock'
     );
     CREATE TABLE IF NOT EXISTS stock.stock_sold_positions (
       id TEXT PRIMARY KEY, position_id TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL,
       market TEXT NOT NULL CHECK(market IN ('US', 'HK', 'CN')), quantity REAL NOT NULL,
       cost_price REAL NOT NULL, sell_price REAL NOT NULL, realized_pnl REAL NOT NULL,
-      sold_at TEXT NOT NULL, notes TEXT NOT NULL, created_at TEXT NOT NULL
+      sold_at TEXT NOT NULL, notes TEXT NOT NULL, created_at TEXT NOT NULL,
+      asset_type TEXT NOT NULL DEFAULT 'stock'
+    );
+    CREATE TABLE IF NOT EXISTS stock.stock_deposits (
+      id TEXT PRIMARY KEY, market TEXT NOT NULL CHECK(market IN ('US', 'CN', 'CRYPTO')),
+      amount REAL NOT NULL, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS stock.stock_entry_plans (
       id TEXT PRIMARY KEY, symbol TEXT NOT NULL, name TEXT NOT NULL,
@@ -864,7 +876,7 @@ function initializeStockDatabase(db, stockDatabasePath) {
       market_updated_at TEXT, market_error TEXT
     );
     CREATE TABLE IF NOT EXISTS stock.stock_settings (
-      id TEXT PRIMARY KEY, total_assets REAL NOT NULL, updated_at TEXT NOT NULL
+      id TEXT PRIMARY KEY, total_assets REAL NOT NULL, cn_total_assets REAL NOT NULL DEFAULT 0, crypto_total_assets REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS stock.stock_symbols (
       symbol TEXT PRIMARY KEY, name TEXT NOT NULL,
@@ -893,6 +905,9 @@ function initializeStockDatabase(db, stockDatabasePath) {
     for (const table of legacyTables) db.exec(`DROP TABLE main.${table}`);
   });
   migrate();
+  migrateStockPositions(db, 'stock');
+  migrateStockSoldPositions(db, 'stock');
+  migrateStockSettings(db, 'stock');
   seedStockSymbols(db, 'stock');
 }
 
@@ -993,6 +1008,8 @@ function createContentHub(options = {}) {
   };
   const officialCalendarFetcher = options.officialCalendarFetcher;
   const quoteFetcher = bindCredentialStore(options.quoteFetcher);
+  const cnQuoteFetcher = bindCredentialStore(options.cnQuoteFetcher);
+  const cryptoQuoteFetcher = bindCredentialStore(options.cryptoQuoteFetcher);
   const valuationFetcher = bindCredentialStore(options.valuationFetcher);
   const configuredGitHubStarsSettings = options.githubStarsSettings || {};
   const githubStarsSettings = {
@@ -2043,7 +2060,7 @@ function normalizeStockNumber(value, label) {
   }
 
   function mapStockPosition(row) {
-    return { id: row.id, symbol: row.symbol, name: row.name, market: row.market, quantity: row.quantity, costPrice: row.cost_price, currentPrice: row.current_price, targetPercent: row.target_percent, notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at, priceUpdatedAt: row.price_updated_at, trailingPE: row.trailing_pe, forwardPE: row.forward_pe, valuationError: row.market_error };
+    return { id: row.id, symbol: row.symbol, name: row.name, market: row.market, assetType: row.asset_type || 'stock', quantity: row.quantity, costPrice: row.cost_price, currentPrice: row.current_price, targetPercent: row.target_percent, notes: row.notes, createdAt: row.created_at, updatedAt: row.updated_at, priceUpdatedAt: row.price_updated_at, trailingPE: row.trailing_pe, forwardPE: row.forward_pe, valuationError: row.market_error, iopv: row.iopv };
   }
 
   function listStockPositions() {
@@ -2056,6 +2073,7 @@ function mapStockSoldPosition(row) {
     symbol: row.symbol,
     name: row.name,
     market: row.market,
+    assetType: row.asset_type || 'stock',
     quantity: row.quantity,
     costPrice: row.cost_price,
     sellPrice: row.sell_price,
@@ -2068,6 +2086,24 @@ function mapStockSoldPosition(row) {
 
 function listStockSoldPositions() {
   return db.prepare('SELECT * FROM stock.stock_sold_positions ORDER BY sold_at DESC, created_at DESC').all().map(mapStockSoldPosition);
+}
+
+function mapStockDeposit(row) {
+  return { id: row.id, market: row.market, amount: row.amount, notes: row.notes, createdAt: row.created_at };
+}
+
+function listStockDeposits() {
+  return db.prepare('SELECT * FROM stock.stock_deposits ORDER BY created_at DESC').all().map(mapStockDeposit);
+}
+
+function createStockDeposit(input) {
+  const market = ['US', 'CN', 'CRYPTO'].includes(input.market) ? input.market : null;
+  const amount = normalizeStockNumber(input.amount, '入金金额');
+  if (!market) throw new Error('入金市场必须是 US、CN 或 CRYPTO。');
+  if (amount <= 0) throw new Error('入金金额必须大于 0。');
+  const deposit = { id: createId(), market, amount, notes: String(input.notes || '').trim(), createdAt: asIso(undefined, now()) };
+  db.prepare('INSERT INTO stock.stock_deposits(id, market, amount, notes, created_at) VALUES (?, ?, ?, ?, ?)').run(deposit.id, deposit.market, deposit.amount, deposit.notes, deposit.createdAt);
+  return mapStockDeposit(db.prepare('SELECT * FROM stock.stock_deposits WHERE id = ?').get(deposit.id));
 }
 
 function sellStockPosition(id, input) {
@@ -2085,6 +2121,7 @@ function sellStockPosition(id, input) {
     symbol: existing.symbol,
     name: existing.name,
     market: existing.market,
+    assetType: existing.asset_type || 'stock',
     quantity,
     costPrice: existing.cost_price,
     sellPrice,
@@ -2095,9 +2132,9 @@ function sellStockPosition(id, input) {
   };
   const transact = db.transaction(() => {
     db.prepare(`INSERT INTO stock.stock_sold_positions
-      (id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(sale.id, sale.positionId, sale.symbol, sale.name, sale.market, sale.quantity, sale.costPrice, sale.sellPrice, sale.realizedPnl, sale.soldAt, sale.notes, sale.createdAt);
+      (id, position_id, symbol, name, market, quantity, cost_price, sell_price, realized_pnl, sold_at, notes, created_at, asset_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(sale.id, sale.positionId, sale.symbol, sale.name, sale.market, sale.quantity, sale.costPrice, sale.sellPrice, sale.realizedPnl, sale.soldAt, sale.notes, sale.createdAt, sale.assetType);
     if (remainingQuantity <= 0) {
       db.prepare('DELETE FROM stock.stock_positions WHERE id = ?').run(id);
     } else {
@@ -2225,9 +2262,10 @@ async function moveStockEntryPlanToPosition(id, input) {
 async function createStockPosition(input) {
   const symbol = normalizeStockSymbol(input.symbol);
     const name = String(input.name || '').trim();
-    const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : null;
-    if (!symbol) throw new Error('股票代码不能为空。');
-    if (!name) throw new Error('股票名称不能为空。');
+    const assetType = input.assetType === 'crypto' ? 'crypto' : 'stock';
+    const market = assetType === 'crypto' ? 'US' : (['US', 'HK', 'CN'].includes(input.market) ? input.market : null);
+    if (!symbol) throw new Error(`${assetType === 'crypto' ? '加密货币' : '股票'}代码不能为空。`);
+    if (!name) throw new Error('名称不能为空。');
     if (!market) throw new Error('市场必须是 US、HK 或 CN。');
     const quantity = normalizeStockNumber(input.quantity, '持仓数量');
     const costPrice = normalizeStockNumber(input.costPrice, '成本价');
@@ -2237,17 +2275,21 @@ async function createStockPosition(input) {
     const timestamp = asIso(undefined, now());
     let currentPrice = 0;
     let priceUpdatedAt = null;
-    if (market === 'US') {
-      if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
-      const quote = await quoteFetcher(symbol);
-      currentPrice = normalizeStockNumber(quote.currentPrice, 'Finnhub 现价');
-      if (currentPrice <= 0) throw new Error('Finnhub 未返回有效现价。');
+    let quote;
+    if (assetType === 'crypto' || market === 'US' || market === 'CN') {
+      const fetchQuote = assetType === 'crypto' ? cryptoQuoteFetcher : (market === 'US' ? quoteFetcher : cnQuoteFetcher);
+      const source = assetType === 'crypto' ? 'Binance' : (market === 'US' ? 'Finnhub' : '东方财富');
+      if (typeof fetchQuote !== 'function') throw new Error(`${source} 行情服务不可用。`);
+      quote = await fetchQuote(symbol);
+      currentPrice = normalizeStockNumber(quote.currentPrice, `${source} 现价`);
+      if (currentPrice <= 0) throw new Error(`${source} 未返回有效现价。`);
       priceUpdatedAt = quote.quotedAt || timestamp;
     }
-    const position = { id: createId(), symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp, priceUpdatedAt };
-    db.prepare('INSERT INTO stock.stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at, price_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp, position.priceUpdatedAt);
-    upsertStockSymbol(position);
+    const iopv = market === 'CN' ? quote?.iopv ?? null : null;
+    const position = { id: createId(), symbol, name, market, assetType, quantity, costPrice, currentPrice, targetPercent, notes: String(input.notes || '').trim(), createdAt: timestamp, updatedAt: timestamp, priceUpdatedAt, iopv };
+    db.prepare('INSERT INTO stock.stock_positions(id, symbol, name, market, quantity, cost_price, current_price, target_percent, notes, created_at, updated_at, price_updated_at, iopv, asset_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(position.id, position.symbol, position.name, position.market, position.quantity, position.costPrice, position.currentPrice, position.targetPercent, position.notes, timestamp, timestamp, position.priceUpdatedAt, position.iopv, position.assetType);
+    if (assetType === 'stock') upsertStockSymbol(position);
     return position;
   }
 
@@ -2256,7 +2298,8 @@ async function createStockPosition(input) {
     if (!existing) return null;
     const symbol = typeof input.symbol === 'string' && input.symbol.trim() ? normalizeStockSymbol(input.symbol) : existing.symbol;
     const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name;
-    const market = ['US', 'HK', 'CN'].includes(input.market) ? input.market : existing.market;
+    const assetType = existing.asset_type || 'stock';
+    const market = assetType === 'crypto' ? 'US' : (['US', 'HK', 'CN'].includes(input.market) ? input.market : existing.market);
     const quantity = input.quantity === undefined ? existing.quantity : normalizeStockNumber(input.quantity, '持仓数量');
     const costPrice = input.costPrice === undefined ? existing.cost_price : normalizeStockNumber(input.costPrice, '成本价');
     const currentPrice = input.currentPrice === undefined ? existing.current_price : normalizeStockNumber(input.currentPrice, '现价');
@@ -2267,7 +2310,7 @@ async function createStockPosition(input) {
     const timestamp = asIso(undefined, now());
     db.prepare('UPDATE stock.stock_positions SET symbol = ?, name = ?, market = ?, quantity = ?, cost_price = ?, current_price = ?, target_percent = ?, notes = ?, updated_at = ? WHERE id = ?')
       .run(symbol, name, market, quantity, costPrice, currentPrice, targetPercent, notes, timestamp, id);
-    upsertStockSymbol({ symbol, name, market });
+    if (assetType === 'stock') upsertStockSymbol({ symbol, name, market });
     return mapStockPosition(db.prepare('SELECT * FROM stock.stock_positions WHERE id = ?').get(id));
   }
 
@@ -2275,27 +2318,39 @@ async function createStockPosition(input) {
     return db.prepare('DELETE FROM stock.stock_positions WHERE id = ?').run(id).changes > 0;
   }
 
-  async function refreshStockPrices() {
-    if (typeof quoteFetcher !== 'function') throw new Error('Finnhub 行情服务不可用。');
+  async function refreshStockPrices(input = {}) {
+    const hasMarketFilter = input.market !== undefined;
+    const market = hasMarketFilter ? input.market : 'US';
+    if (!['US', 'CN', 'CRYPTO'].includes(market)) throw new Error('仅支持刷新美股、A 股或加密货币行情。');
+    const fetchQuote = market === 'CRYPTO' ? cryptoQuoteFetcher : (market === 'US' ? quoteFetcher : cnQuoteFetcher);
+    const source = market === 'CRYPTO' ? 'Binance' : (market === 'US' ? 'Finnhub' : '东方财富');
+    if (typeof fetchQuote !== 'function') throw new Error(`${source} 行情服务不可用。`);
     const positions = listStockPositions();
-    const skipped = positions.filter((position) => position.market !== 'US').map((position) => ({ id: position.id, symbol: position.symbol, reason: '当前仅支持刷新美股行情。' }));
-    const usPositions = positions.filter((position) => position.market === 'US');
+    const isSelectedMarket = (position) => market === 'CRYPTO' ? position.assetType === 'crypto' : position.market === market && position.assetType !== 'crypto';
+    const marketLabel = market === 'CRYPTO' ? '加密货币' : (market === 'US' ? '美股' : 'A 股');
+    const skipped = positions.filter((position) => !isSelectedMarket(position)).map((position) => ({
+      id: position.id,
+      symbol: position.symbol,
+      reason: hasMarketFilter ? `当前未选择刷新${marketLabel}行情。` : '当前仅支持刷新美股行情。'
+    }));
+    const marketPositions = positions.filter(isSelectedMarket);
     const quotesBySymbol = new Map();
-    for (const position of usPositions) {
-      if (!quotesBySymbol.has(position.symbol)) quotesBySymbol.set(position.symbol, await quoteFetcher(position.symbol));
+    for (const position of marketPositions) {
+      if (!quotesBySymbol.has(position.symbol)) quotesBySymbol.set(position.symbol, await fetchQuote(position.symbol));
     }
     const timestamp = asIso(undefined, now());
-    const update = db.prepare('UPDATE stock.stock_positions SET current_price = ?, trailing_pe = ?, forward_pe = ?, price_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
+    const update = db.prepare('UPDATE stock.stock_positions SET current_price = ?, trailing_pe = ?, forward_pe = ?, iopv = ?, price_updated_at = ?, market_error = ?, updated_at = ? WHERE id = ?');
     const updated = [];
-    for (const position of usPositions) {
+    for (const position of marketPositions) {
       const quote = quotesBySymbol.get(position.symbol);
       let valuation = { trailingPE: null, forwardPE: null };
       let valuationError = null;
-      if (typeof valuationFetcher === 'function') {
+      if (market === 'US' && typeof valuationFetcher === 'function') {
         try { valuation = await valuationFetcher(position.symbol); } catch (error) { valuationError = error.message; }
       }
-      update.run(quote.currentPrice, valuation.trailingPE ?? null, valuation.forwardPE ?? null, quote.quotedAt || timestamp, valuationError, timestamp, position.id);
-      updated.push({ id: position.id, symbol: position.symbol, currentPrice: quote.currentPrice, change: quote.change, changePercent: quote.changePercent, priceUpdatedAt: quote.quotedAt || timestamp, trailingPE: valuation.trailingPE ?? null, forwardPE: valuation.forwardPE ?? null, valuationError });
+      const iopv = market === 'CN' ? quote.iopv ?? null : null;
+      update.run(quote.currentPrice, valuation.trailingPE ?? null, valuation.forwardPE ?? null, iopv, quote.quotedAt || timestamp, valuationError, timestamp, position.id);
+      updated.push({ id: position.id, symbol: position.symbol, currentPrice: quote.currentPrice, change: quote.change, changePercent: quote.changePercent, iopv, priceUpdatedAt: quote.quotedAt || timestamp, trailingPE: valuation.trailingPE ?? null, forwardPE: valuation.forwardPE ?? null, valuationError });
     }
     return { updated, skipped };
   }
@@ -2453,15 +2508,18 @@ async function createStockPosition(input) {
 
   function getStockSettings() {
     const row = db.prepare("SELECT * FROM stock.stock_settings WHERE id = 'default'").get();
-    return { totalAssets: row ? row.total_assets : 0 };
+    return { totalAssets: row ? row.total_assets : 0, cnTotalAssets: row ? row.cn_total_assets : 0, cryptoTotalAssets: row ? row.crypto_total_assets : 0 };
   }
 
   function setStockSettings(input) {
-    const totalAssets = Number(input.totalAssets);
-    if (!Number.isFinite(totalAssets) || totalAssets < 0) throw new Error('总资产必须是非负数字。');
+    const current = getStockSettings();
+    const totalAssets = input.totalAssets === undefined ? current.totalAssets : Number(input.totalAssets);
+    const cnTotalAssets = input.cnTotalAssets === undefined ? current.cnTotalAssets : Number(input.cnTotalAssets);
+    const cryptoTotalAssets = input.cryptoTotalAssets === undefined ? current.cryptoTotalAssets : Number(input.cryptoTotalAssets);
+    if (![totalAssets, cnTotalAssets, cryptoTotalAssets].every((value) => Number.isFinite(value) && value >= 0)) throw new Error('总资产必须是非负数字。');
     const timestamp = asIso(undefined, now());
-    db.prepare("INSERT INTO stock.stock_settings(id, total_assets, updated_at) VALUES ('default', ?, ?) ON CONFLICT(id) DO UPDATE SET total_assets = excluded.total_assets, updated_at = excluded.updated_at").run(totalAssets, timestamp);
-    return { totalAssets };
+    db.prepare("INSERT INTO stock.stock_settings(id, total_assets, cn_total_assets, crypto_total_assets, updated_at) VALUES ('default', ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET total_assets = excluded.total_assets, cn_total_assets = excluded.cn_total_assets, crypto_total_assets = excluded.crypto_total_assets, updated_at = excluded.updated_at").run(totalAssets, cnTotalAssets, cryptoTotalAssets, timestamp);
+    return { totalAssets, cnTotalAssets, cryptoTotalAssets };
   }
 
   function reminderStatus(item, currentTime = expiringNow || now()) {
@@ -3548,7 +3606,9 @@ async function createStockPosition(input) {
       if (request.method === 'PUT' && pathname === '/v1/stock-settings') return sendJson(response, 200, { settings: setStockSettings(await parseRequest(request)) });
       if (request.method === 'GET' && pathname === '/v1/stock-positions') return sendJson(response, 200, { positions: listStockPositions() });
       if (request.method === 'GET' && pathname === '/v1/stock-sold-positions') return sendJson(response, 200, { soldPositions: listStockSoldPositions() });
-      if (request.method === 'POST' && pathname === '/v1/stock-positions/refresh-prices') return sendJson(response, 200, await refreshStockPrices());
+      if (request.method === 'GET' && pathname === '/v1/stock-deposits') return sendJson(response, 200, { deposits: listStockDeposits() });
+      if (request.method === 'POST' && pathname === '/v1/stock-deposits') return sendJson(response, 201, { deposit: createStockDeposit(await parseRequest(request)) });
+      if (request.method === 'POST' && pathname === '/v1/stock-positions/refresh-prices') return sendJson(response, 200, await refreshStockPrices(await parseRequest(request)));
       if (request.method === 'POST' && pathname === '/v1/stock-positions') return sendJson(response, 201, { position: await createStockPosition(await parseRequest(request)) });
       const stockPositionSellMatch = pathname.match(/^\/v1\/stock-positions\/([^/]+)\/sell$/);
       if (stockPositionSellMatch && request.method === 'POST') {

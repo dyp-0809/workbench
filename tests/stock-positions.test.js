@@ -3,21 +3,32 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
+const Database = require('better-sqlite3');
 const { createContentHub } = require('../local-hub/src/content-hub.js');
 
 async function withHub(run) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-stock-'));
   const quoteCalls = [];
+  const cnQuoteCalls = [];
+  const cryptoQuoteCalls = [];
   const hub = createContentHub({
     dataDirectory: directory,
     quoteFetcher: async (symbol) => {
       quoteCalls.push(symbol);
       return { symbol, currentPrice: 180, quotedAt: '2026-08-21T00:00:00.000Z' };
+    },
+    cnQuoteFetcher: async (symbol) => {
+      cnQuoteCalls.push(symbol);
+      return { symbol, currentPrice: 12.34, iopv: 10, quotedAt: '2026-08-21T00:00:00.000Z' };
+    },
+    cryptoQuoteFetcher: async (symbol) => {
+      cryptoQuoteCalls.push(symbol);
+      return { symbol, currentPrice: 65000, quotedAt: '2026-08-21T00:00:00.000Z' };
     }
   });
   const address = await hub.listen(0);
   const baseUrl = `http://127.0.0.1:${address.port}/v1/stock-positions`;
-  try { await run({ baseUrl, quoteCalls }); } finally { await hub.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+  try { await run({ baseUrl, quoteCalls, cnQuoteCalls, cryptoQuoteCalls }); } finally { await hub.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
 async function createPosition(baseUrl, input = {}) {
@@ -119,11 +130,17 @@ test('持仓支持目标仓位，总资产设置可读写', async () => {
     const initial = await initialResponse.json();
     assert.equal(initialResponse.status, 200);
     assert.equal(initial.settings.totalAssets, 0);
+    assert.equal(initial.settings.cnTotalAssets, 0);
+    assert.equal(initial.settings.cryptoTotalAssets, 0);
 
     const savedResponse = await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: 1000000 }) });
     const saved = await savedResponse.json();
     assert.equal(savedResponse.status, 200);
     assert.equal(saved.settings.totalAssets, 1000000);
+    const cnSaved = await (await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cnTotalAssets: 500000 }) })).json();
+    assert.equal(cnSaved.settings.cnTotalAssets, 500000);
+    const cryptoSaved = await (await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cryptoTotalAssets: 10000 }) })).json();
+    assert.equal(cryptoSaved.settings.cryptoTotalAssets, 10000);
     const invalidResponse = await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ totalAssets: -1 }) });
     assert.equal(invalidResponse.status, 400);
 
@@ -135,6 +152,76 @@ test('持仓支持目标仓位，总资产设置可读写', async () => {
 
     assert.equal((await createPosition(baseUrl, { targetPercent: 101 })).response.status, 400);
     assert.equal((await createPosition(baseUrl, { targetPercent: -1 })).response.status, 400);
+  });
+});
+
+test('已有股票数据库迁移后保留美元资产并补充 A 股资产', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'x-assistant-stock-settings-migration-'));
+  const database = new Database(path.join(directory, 'stock.sqlite'));
+  database.exec("CREATE TABLE stock_settings (id TEXT PRIMARY KEY, total_assets REAL NOT NULL, updated_at TEXT NOT NULL); INSERT INTO stock_settings VALUES ('default', 1000, '2026-01-01T00:00:00.000Z');");
+  database.close();
+  const hub = createContentHub({ dataDirectory: directory });
+  const address = await hub.listen(0);
+  try {
+    const settings = await (await fetch(`http://127.0.0.1:${address.port}/v1/stock-settings`)).json();
+    assert.deepEqual(settings.settings, { totalAssets: 1000, cnTotalAssets: 0, cryptoTotalAssets: 0 });
+  } finally {
+    await hub.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('A 股持仓使用独立行情源并可单独刷新', async () => {
+  await withHub(async ({ baseUrl, quoteCalls, cnQuoteCalls }) => {
+    const { response, payload } = await createPosition(baseUrl, { symbol: '000001', name: '平安银行', market: 'CN', costPrice: 10 });
+    assert.equal(response.status, 201);
+    assert.equal(payload.position.currentPrice, 12.34);
+    assert.equal(payload.position.iopv, 10);
+    assert.deepEqual(quoteCalls, []);
+    assert.deepEqual(cnQuoteCalls, ['000001']);
+
+    const refreshed = await (await fetch(`${baseUrl}/refresh-prices`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: 'CN' }) })).json();
+    assert.deepEqual(refreshed.updated.map((item) => item.symbol), ['000001']);
+    assert.equal(refreshed.updated[0].iopv, 10);
+    assert.deepEqual(cnQuoteCalls, ['000001', '000001']);
+  });
+});
+
+test('加密货币持仓使用 Binance 行情、独立资产与刷新范围', async () => {
+  await withHub(async ({ baseUrl, quoteCalls, cryptoQuoteCalls }) => {
+    const settingsUrl = `${baseUrl.replace('/v1/stock-positions', '')}/v1/stock-settings`;
+    const { response, payload } = await createPosition(baseUrl, { symbol: 'btc', name: '比特币', assetType: 'crypto', market: 'CN', quantity: 0.25, costPrice: 60000 });
+    assert.equal(response.status, 201);
+    assert.equal(payload.position.market, 'US');
+    assert.equal(payload.position.assetType, 'crypto');
+    assert.equal(payload.position.currentPrice, 65000);
+    assert.deepEqual(quoteCalls, []);
+    assert.deepEqual(cryptoQuoteCalls, ['BTC']);
+
+    const refreshed = await (await fetch(`${baseUrl}/refresh-prices`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: 'CRYPTO' }) })).json();
+    assert.deepEqual(refreshed.updated.map((item) => item.symbol), ['BTC']);
+    assert.deepEqual(cryptoQuoteCalls, ['BTC', 'BTC']);
+
+    const saved = await (await fetch(settingsUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cryptoTotalAssets: 10000 }) })).json();
+    assert.equal(saved.settings.cryptoTotalAssets, 10000);
+  });
+});
+
+test('入金记录按市场隔离并保持初始资金独立', async () => {
+  await withHub(async ({ baseUrl }) => {
+    const rootUrl = baseUrl.replace('/v1/stock-positions', '');
+    const depositsUrl = `${rootUrl}/v1/stock-deposits`;
+    const created = await (await fetch(depositsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: 'US', amount: 500, notes: '月度加仓' }) })).json();
+    assert.equal(created.deposit.market, 'US');
+    assert.equal(created.deposit.amount, 500);
+    assert.equal(created.deposit.notes, '月度加仓');
+    await fetch(depositsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: 'CRYPTO', amount: 1000 }) });
+    const listed = await (await fetch(depositsUrl)).json();
+    assert.deepEqual(new Set(listed.deposits.map((deposit) => deposit.market)), new Set(['US', 'CRYPTO']));
+    assert.equal((await fetch(depositsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market: 'US', amount: 0 }) })).status, 400);
+
+    const settings = await (await fetch(`${rootUrl}/v1/stock-settings`)).json();
+    assert.equal(settings.settings.totalAssets, 0);
   });
 });
 

@@ -9,6 +9,8 @@ const { discoverModels, getSafeModelSettings, writeModelSettings } = require('./
 const { getSafeBarkSettings, pushBarkNotification, writeBarkSettings } = require('./bark.js');
 const { createOfficialMacroCalendarFetcher } = require('./official-calendar.js');
 const { fetchConfiguredFinnhubQuote, fetchConfiguredFinnhubValuation, getSafeFinnhubSettings, testFinnhubConnection, writeFinnhubSettings } = require('./finnhub.js');
+const { fetchEastmoneyQuote } = require('./eastmoney.js');
+const { fetchBinanceQuote } = require('./binance.js');
 
 const port = Number(process.env.X_ASSISTANT_PORT || 4318);
 const host = process.env.X_ASSISTANT_HOST || '127.0.0.1';
@@ -31,6 +33,8 @@ const hub = createContentHub({
   finnhubSettings: { get: getSafeFinnhubSettings, set: writeFinnhubSettings, test: testFinnhubConnection },
   officialCalendarFetcher: createOfficialMacroCalendarFetcher(),
   quoteFetcher: fetchConfiguredFinnhubQuote,
+  cnQuoteFetcher: fetchEastmoneyQuote,
+  cryptoQuoteFetcher: fetchBinanceQuote,
   valuationFetcher: fetchConfiguredFinnhubValuation
 });
 
